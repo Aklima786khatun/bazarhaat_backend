@@ -14,7 +14,12 @@ from urllib.parse import quote_plus
 
 # --- CONFIG ---
 DB_PASSWORD = "Bazarhaat@123"
-DATABASE_URL = f"postgresql://postgres:{quote_plus(DB_PASSWORD)}@localhost:5433/bazarhaat"
+# For Local it was localhost:5433, for Render use ENV variable
+DATABASE_URL_ENV = os.getenv("DATABASE_URL")
+if DATABASE_URL_ENV:
+    DATABASE_URL = DATABASE_URL_ENV
+else:
+    DATABASE_URL = f"postgresql://postgres:{quote_plus(DB_PASSWORD)}@localhost:5433/bazarhaat"
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -84,7 +89,6 @@ class Payout(Base):
     status = Column(String, default="Processing")
     created_at = Column(DateTime, default=datetime.now)
 
-# ====== NEW CUSTOMER TABLE ======
 class Customer(Base):
     __tablename__ = "customers"
     id = Column(String, primary_key=True)
@@ -94,17 +98,14 @@ class Customer(Base):
     address = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
 
-# For OTP - temporary memory
-otp_store = {} # phone -> otp
+otp_store = {}
 
-# ====== STEP 1: Pehle Table Banao ======
 try:
     Base.metadata.create_all(bind=engine)
     print("✅ PostgreSQL Connected - All Tables Created")
 except Exception as e:
     print(f"❌ DB Error: {e}")
 
-# ====== STEP 2: FIR Column Fix Karo ======
 try:
     with engine.connect() as conn:
         print("🔧 Checking database columns...")
@@ -116,7 +117,16 @@ except Exception as e:
     print(f"DB Fix Note: {e}")
 
 app = FastAPI(title="BazarHaat Main Backend - Controls All 5 Apps", version="2.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# ====== CORS FIX - THIS SOLVES YOUR CHROME ERROR ======
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 os.makedirs("uploads/riders", exist_ok=True)
 
 FIXED_CATEGORIES = ["Vegetables", "Fruits", "Dairy", "Groceries", "Electronic Accessories", "Pharmacy", "Clothes", "Kids", "Beauty", "Pet Care", "Beverages"]
@@ -177,11 +187,8 @@ class ProfileUpdateRequest(BaseModel):
     upi: Optional[str] = None
     bank_account: Optional[str] = None
     ifsc: Optional[str] = None
-
-# ====== NEW CUSTOMER REQUEST MODELS ======
 class CustomerLoginRequest(BaseModel):
     phone: str
-
 class CustomerVerifyRequest(BaseModel):
     phone: str
     otp: str
@@ -189,9 +196,8 @@ class CustomerVerifyRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"message": "BazarHaat Backend Running - Controls 5 Apps", "database": "PostgreSQL 17 - 5433 - bazarhaat", "docs": "/docs"}
+    return {"message": "BazarHaat Backend Running - Controls 5 Apps", "database": "PostgreSQL", "docs": "/docs"}
 
-# ====== NEW CUSTOMER AUTH APIS - FIX FOR YOUR LOOP ISSUE ======
 @app.post("/api/customer/send-otp")
 def send_customer_otp(req: CustomerLoginRequest):
     otp_store[req.phone] = "1234"
@@ -218,6 +224,30 @@ def verify_customer_otp(req: CustomerVerifyRequest):
         "token": f"token_{customer.id}"
     }
 
+@app.post("/api/customer/register")
+def register_customer_full(data: dict):
+    db = SessionLocal()
+    phone = data.get("phone") or data.get("Phone Number") or data.get("phoneNumber") or ""
+    name = data.get("name") or data.get("fullName") or data.get("Full Name") or "BazarHaat Customer"
+    town = data.get("town") or data.get("city") or ""
+    house = data.get("address") or data.get("house") or ""
+    if not phone:
+        db.close()
+        raise HTTPException(status_code=400, detail="Phone required")
+    customer = db.query(Customer).filter(Customer.phone == phone).first()
+    if customer:
+        customer.name = name
+        customer.address = f"{house}, {town}"
+        db.commit()
+        db.refresh(customer)
+    else:
+        customer = Customer(id=f"CUST-{uuid.uuid4().hex[:6].upper()}", phone=phone, name=name, address=f"{house}, {town}")
+        db.add(customer)
+        db.commit()
+        db.refresh(customer)
+    db.close()
+    return {"success": True, "customer": {"id": customer.id, "phone": customer.phone, "name": customer.name}, "token": f"token_{customer.id}"}
+
 @app.get("/api/customers")
 def get_customers():
     db = SessionLocal()
@@ -228,6 +258,7 @@ def get_customers():
 @app.get("/api/settings")
 def get_settings():
     return db_settings
+
 @app.post("/api/settings")
 def update_settings(new_settings: dict):
     db_settings.update(new_settings)
@@ -543,6 +574,7 @@ def approve_payout(payout_id: str):
     return {"success": True, "message": "Payout Completed!"}
 
 rider_profiles = {}
+
 @app.post("/api/rider/register")
 async def register_rider(rider_id: str = Form(...), name: str = Form(...), phone: str = Form(...), bike_number: str = Form(...), photo: UploadFile = File(None), rc: UploadFile = File(None), license: UploadFile = File(None), aadhaar: UploadFile = File(None)):
     def save_file(f, prefix):
@@ -599,29 +631,7 @@ def admin_update_order_status(order_id: str, data: dict):
     db.commit()
     db.close()
     return o
-@app.post("/api/customer/register")
-def register_customer_full(data: dict):
-    db = SessionLocal()
-    phone = data.get("phone") or data.get("Phone Number") or data.get("phoneNumber") or ""
-    name = data.get("name") or data.get("fullName") or data.get("Full Name") or "BazarHaat Customer"
-    town = data.get("town") or data.get("city") or ""
-    house = data.get("address") or data.get("house") or ""
-    if not phone:
-        db.close()
-        raise HTTPException(status_code=400, detail="Phone required")
-    customer = db.query(Customer).filter(Customer.phone == phone).first()
-    if customer:
-        customer.name = name
-        customer.address = f"{house}, {town}"
-        db.commit()
-        db.refresh(customer)
-    else:
-        customer = Customer(id=f"CUST-{uuid.uuid4().hex[:6].upper()}", phone=phone, name=name, address=f"{house}, {town}")
-        db.add(customer)
-        db.commit()
-        db.refresh(customer)
-    db.close()
-    return {"success": True, "customer": {"id": customer.id, "phone": customer.phone, "name": customer.name}, "token": f"token_{customer.id}"}
+
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 if __name__ == "__main__":

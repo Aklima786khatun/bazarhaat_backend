@@ -129,7 +129,7 @@ except Exception as e:
     print(f"DB Fix Note: {e}")
 
 app = FastAPI(title="BazarHaat Main Backend - Controls All 5 Apps", version="2.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 os.makedirs("uploads/riders", exist_ok=True)
 
 FIXED_CATEGORIES = ["Vegetables", "Fruits", "Dairy", "Groceries", "Electronic Accessories", "Pharmacy", "Clothes", "Kids", "Beauty", "Pet Care", "Beverages"]
@@ -199,8 +199,7 @@ class CustomerVerifyRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"message": "BazarHaat Backend Running", "database": DATABASE_URL, "docs": "/docs"}
-
+    return {"message": "BazarHaat Backend Running", "status": "OK", "docs": "/docs"}
 @app.post("/api/customer/send-otp")
 def send_customer_otp(req: CustomerLoginRequest):
     otp = str(random.randint(1000, 9999))  # RANDOM OTP

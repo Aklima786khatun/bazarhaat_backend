@@ -8,6 +8,7 @@ import uvicorn
 import uuid
 import shutil
 import os
+import random
 from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from urllib.parse import quote_plus
@@ -202,14 +203,19 @@ def home():
 
 @app.post("/api/customer/send-otp")
 def send_customer_otp(req: CustomerLoginRequest):
-    otp_store[req.phone] = "1234"
-    print(f"OTP for {req.phone} is 1234")
-    return {"success": True, "message": "OTP sent", "otp": "1234"}
+    otp = str(random.randint(1000, 9999))  # RANDOM OTP
+    otp_store[req.phone] = otp
+    print(f"✅ OTP for {req.phone} is {otp}")
+    return {"success": True, "message": "OTP sent", "otp": otp}
 
 @app.post("/api/customer/verify-otp")
 def verify_customer_otp(req: CustomerVerifyRequest):
     db = SessionLocal()
-    if req.otp!= "1234" and otp_store.get(req.phone)!= req.otp:
+    stored_otp = otp_store.get(req.phone)
+    if stored_otp is None:
+        db.close()
+        raise HTTPException(status_code=400, detail="OTP not sent. Please send OTP first")
+    if str(req.otp) != str(stored_otp):
         db.close()
         raise HTTPException(status_code=400, detail="Wrong OTP")
     customer = db.query(Customer).filter(Customer.phone == req.phone).first()
@@ -218,9 +224,9 @@ def verify_customer_otp(req: CustomerVerifyRequest):
         db.add(customer)
         db.commit()
         db.refresh(customer)
+    otp_store.pop(req.phone, None)  # Delete OTP after use
     db.close()
     return {"success": True, "is_new_user": False, "customer": {"id": customer.id, "phone": customer.phone, "name": customer.name}, "token": f"token_{customer.id}"}
-
 @app.post("/api/customer/register")
 def register_customer_full(data: dict):
     db = SessionLocal()

@@ -8,6 +8,7 @@ import uvicorn
 import uuid
 import shutil
 import os
+import base64
 import random
 from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, text
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -340,19 +341,43 @@ def get_products(category: Optional[str] = None):
 def vendor_add_product(product: dict):
     db = SessionLocal()
     try:
-        price = product.get("price") or product.get("sell_price") or product.get("sellPrice") or 0
-        image = product.get("image") or product.get("image_url") or product.get("imageUrl") or product.get("product_image") or ""
+        price = product.get("price") or product.get("sell_price") or 0
         name = product.get("name")
         if not name:
             raise HTTPException(status_code=400, detail="Product name required")
-        p = Product(name=name, price=float(price), stock=int(product.get("stock", 100)), image=str(image), vendor_id=product.get("vendor_id") or product.get("vendorId") or "VENDOR-01", category=product.get("category", "General"))
+
+        image_data = product.get("image") or product.get("image_url") or ""
+        final_image_path = image_data
+
+        if image_data and image_data.startswith("data:image"):
+            try:
+                header, encoded = image_data.split(",", 1)
+                ext = "jpg"
+                if "png" in header: ext = "png"
+                if "webp" in header: ext = "webp"
+                filename = f"{uuid.uuid4().hex}.{ext}"
+                file_location = f"uploads/products/{filename}"
+                os.makedirs("uploads/products", exist_ok=True)
+                with open(file_location, "wb") as f:
+                    f.write(base64.b64decode(encoded))
+                final_image_path = f"/{file_location}"
+                print(f"✅ Base64 Image Saved: {file_location}")
+            except Exception as e:
+                print(f"❌ Base64 Save Error: {e}")
+                final_image_path = "https://images.unsplash.com/photo-1542838132-92c53300491e?w=400"
+
+        p = Product(name=name, price=float(price), stock=int(product.get("stock", 100)), image=str(final_image_path), vendor_id=product.get("vendor_id") or "VENDOR-01", category=product.get("category", "General"))
         db.add(p)
         db.commit()
         db.refresh(p)
+        print(f"✅ Product Added: {p.name} -> {p.image}")
         return p
+    except HTTPException as he:
+        raise he
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"❌ Add Product Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Server Error: {str(e)}")
     finally:
         db.close()
 
@@ -374,9 +399,12 @@ async def add_product_with_image(
         if file_obj and file_obj.filename:
             filename = f"{uuid.uuid4().hex}_{file_obj.filename}"
             file_location = f"uploads/products/{filename}"
+            os.makedirs("uploads/products", exist_ok=True)
             with open(file_location, "wb") as buffer:
                 shutil.copyfileobj(file_obj.file, buffer)
             image_path = f"/{file_location}"
+        if not image_path:
+            image_path = "https://images.unsplash.com/photo-1542838132-92c53300491e?w=400"
         p = Product(name=name, price=float(price), stock=int(stock), image=image_path, vendor_id=vendor_id, category=category)
         db.add(p)
         db.commit()
@@ -384,6 +412,7 @@ async def add_product_with_image(
         return p
     except Exception as e:
         db.rollback()
+        print(f"❌ add-with-image Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()

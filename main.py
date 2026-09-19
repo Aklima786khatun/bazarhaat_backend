@@ -51,14 +51,13 @@ class Product(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String)
     price = Column(Float)
-    original_price = Column(Float, default=0)
+    original_price = Column(Float, nullable=True)
     discount = Column(Float, default=0)
     offer_text = Column(String, default="")
-    stock = Column(Integer)
+    stock = Column(Integer, default=100)
     image = Column(Text)
     category = Column(String, default="General")
     vendor_id = Column(String)
-
 class Rider(Base):
     __tablename__ = "riders"
     id = Column(String, primary_key=True)

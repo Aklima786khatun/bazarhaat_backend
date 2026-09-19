@@ -8,15 +8,12 @@ import uvicorn
 import uuid
 import shutil
 import os
-import random
 from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from urllib.parse import quote_plus
 
-# --- CONFIG - FINAL FIX FOR RENDER + LOCAL ---
 DB_PASSWORD = "Bazarhaat@123"
 DATABASE_URL_ENV = os.getenv("DATABASE_URL")
-
 if DATABASE_URL_ENV:
     DATABASE_URL = DATABASE_URL_ENV
     if DATABASE_URL.startswith("postgres://"):
@@ -53,7 +50,7 @@ class Product(Base):
     name = Column(String)
     price = Column(Float)
     stock = Column(Integer)
-    image = Column(Text)
+    image = Column(Text, nullable=True, default="")
     category = Column(String, default="General")
     vendor_id = Column(String)
 
@@ -109,27 +106,23 @@ class Customer(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 otp_store = {}
-
 try:
     Base.metadata.create_all(bind=engine)
-    print(f"✅ DB Connected: {DATABASE_URL} - All Tables Created")
+    print(f"✅ DB Connected")
 except Exception as e:
     print(f"❌ DB Error: {e}")
 
 try:
     with engine.connect() as conn:
         if "sqlite" not in DATABASE_URL:
-            print("🔧 Checking database columns...")
             conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS vendor_id VARCHAR;"))
             conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS category VARCHAR DEFAULT 'General';"))
             conn.commit()
-            print("✅ Database Columns Fixed!")
 except Exception as e:
-    print(f"DB Fix Note: {e}")
+    print(f"DB Fix: {e}")
 
-app = FastAPI(title="BazarHaat Main Backend - Controls All 5 Apps", version="2.0.0")
+app = FastAPI(title="BazarHaat Backend", version="3.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
-
 os.makedirs("uploads/riders", exist_ok=True)
 os.makedirs("uploads/products", exist_ok=True)
 
@@ -143,8 +136,6 @@ def init_data():
             db.add_all([
                 Vendor(id="VENDOR-01", name="Goreswar Kirana", owner="Bikash", phone="9876543211", address="Goreswar Market", city="Goreswar", orders=42, isOnline=True, isActive=True),
                 Vendor(id="VENDOR-02", name="Maa Store Pathsala", owner="Ramesh", phone="9876543212", address="Pathsala Market", city="Pathsala", orders=18, isOnline=True, isActive=True),
-                Vendor(id="VENDOR-03", name="Rangia Fresh Mart", owner="Sanjay", phone="9876543213", address="Rangia Market", city="Rangia", orders=35, isOnline=False, isActive=True),
-                Vendor(id="VENDOR-04", name="Baihata Medical", owner="Dr Das", phone="9876543214", address="Baihata", city="Baihata", orders=12, isOnline=True, isActive=True),
             ])
             db.commit()
         if db.query(Product).count() == 0:
@@ -162,13 +153,11 @@ def init_data():
                 Order(id="BH-103", otp="5678", store_qr="STORE-BH-103", amount=450, customer="Ankit Sharma", customer_phone="9876543211", phone="9876543211", address="Main Market, Baihata", status="New", earning=60, vendor_id="VENDOR-01"),
             ])
             db.commit()
-        print("✅ Seed Check Done")
     except Exception as e:
         print(f"Seed error: {e}")
         db.rollback()
     finally:
         db.close()
-
 init_data()
 
 class QrVerifyRequest(BaseModel):
@@ -204,9 +193,8 @@ def home():
 
 @app.post("/api/customer/send-otp")
 def send_customer_otp(req: CustomerLoginRequest):
-    otp = "9876" # FIXED OTP FOR TESTING
+    otp = "9876"
     otp_store[req.phone] = otp
-    print(f"✅ OTP for {req.phone} is {otp}")
     return {"success": True, "message": "OTP sent", "otp": otp}
 
 @app.post("/api/customer/verify-otp")
@@ -215,7 +203,7 @@ def verify_customer_otp(req: CustomerVerifyRequest):
     stored_otp = otp_store.get(req.phone)
     if stored_otp is None:
         db.close()
-        raise HTTPException(status_code=400, detail="OTP not sent. Please send OTP first")
+        raise HTTPException(status_code=400, detail="OTP not sent")
     if str(req.otp)!= str(stored_otp):
         db.close()
         raise HTTPException(status_code=400, detail="Wrong OTP")
@@ -227,13 +215,13 @@ def verify_customer_otp(req: CustomerVerifyRequest):
         db.refresh(customer)
     otp_store.pop(req.phone, None)
     db.close()
-    return {"success": True, "is_new_user": False, "customer": {"id": customer.id, "phone": customer.phone, "name": customer.name}, "token": f"token_{customer.id}"}
+    return {"success": True, "customer": {"id": customer.id, "phone": customer.phone, "name": customer.name}, "token": f"token_{customer.id}"}
 
 @app.post("/api/customer/register")
 def register_customer_full(data: dict):
     db = SessionLocal()
-    phone = data.get("phone") or data.get("Phone Number") or data.get("phoneNumber") or ""
-    name = data.get("name") or data.get("fullName") or data.get("Full Name") or "BazarHaat Customer"
+    phone = data.get("phone") or data.get("Phone Number") or ""
+    name = data.get("name") or data.get("fullName") or "BazarHaat Customer"
     town = data.get("town") or data.get("city") or ""
     house = data.get("address") or data.get("house") or ""
     if not phone:
@@ -259,30 +247,25 @@ def get_customers():
     c = db.query(Customer).all()
     db.close()
     return c
-
 @app.get("/api/settings")
 def get_settings():
     return db_settings
-
 @app.post("/api/settings")
 def update_settings(new_settings: dict):
     db_settings.update(new_settings)
     return {"status": "success", "settings": db_settings}
-
 @app.get("/api/dashboard")
 def admin_dashboard():
     db = SessionLocal()
     result = {"total_users": db.query(Customer).count(), "total_vendors": db.query(Vendor).count(), "total_riders": db.query(Rider).count(), "total_orders": db.query(Order).count(), "settings": db_settings, "vendors": db.query(Vendor).all()}
     db.close()
     return result
-
 @app.get("/api/vendors")
 def get_vendors():
     db = SessionLocal()
     v = db.query(Vendor).all()
     db.close()
     return v
-
 @app.get("/api/vendor/stats/{vendor_id}")
 def vendor_stats(vendor_id: str):
     db = SessionLocal()
@@ -302,7 +285,6 @@ def vendor_stats(vendor_id: str):
         return {"vendor": vendor_dict, "total_orders": total_orders, "pending_orders": pending_orders, "total_income": total_income, "today_income": today_income, "today_orders": len(today_list), "products_count": products_count, "rating": 4.8}
     finally:
         db.close()
-
 @app.post("/api/vendors/{vendor_id}/toggle")
 def toggle_store(vendor_id: str):
     db = SessionLocal()
@@ -317,7 +299,6 @@ def toggle_store(vendor_id: str):
     res = {"success": True, "vendor": v, "status": "Online" if v.isOnline else "Offline"}
     db.close()
     return res
-
 @app.post("/api/vendors/add")
 def add_vendor(data: dict):
     db = SessionLocal()
@@ -328,11 +309,9 @@ def add_vendor(data: dict):
     db.refresh(new_v)
     db.close()
     return {"success": True, "vendor": new_v}
-
 @app.get("/api/categories")
 def get_categories():
     return ["All"] + FIXED_CATEGORIES
-
 @app.get("/api/products")
 def get_products(category: Optional[str] = None):
     db = SessionLocal()
@@ -345,37 +324,28 @@ def get_products(category: Optional[str] = None):
         db.close()
     return products
 
-# --- FIXED PRODUCT ADD (JSON) ---
+# JSON - image optional
 @app.post("/api/vendor/products")
 def vendor_add_product(product: dict):
     db = SessionLocal()
     try:
         price = product.get("price") or product.get("sell_price") or product.get("sellPrice") or 0
-        image = product.get("image") or product.get("image_url") or product.get("imageUrl") or ""
+        image = product.get("image") or product.get("image_url") or product.get("imageUrl") or product.get("product_image") or ""
         name = product.get("name")
         if not name:
             raise HTTPException(status_code=400, detail="Product name required")
-        print(f"Adding Product JSON: {product}")
-        p = Product(
-            name=name,
-            price=float(price),
-            stock=int(product.get("stock", 100)),
-            image=str(image),
-            vendor_id=product.get("vendor_id") or product.get("vendorId") or "VENDOR-01",
-            category=product.get("category", "General")
-        )
+        p = Product(name=name, price=float(price), stock=int(product.get("stock", 100)), image=str(image), vendor_id=product.get("vendor_id") or product.get("vendorId") or "VENDOR-01", category=product.get("category", "General"))
         db.add(p)
         db.commit()
         db.refresh(p)
         return p
     except Exception as e:
         db.rollback()
-        print(f"Product Add Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
 
-# --- NEW PRODUCT ADD WITH IMAGE UPLOAD ---
+# IMAGE UPLOAD - image optional (Yes/No both work)
 @app.post("/api/vendor/products/add-with-image")
 async def add_product_with_image(
     name: str = Form(...),
@@ -383,27 +353,31 @@ async def add_product_with_image(
     stock: int = Form(100),
     category: str = Form("General"),
     vendor_id: str = Form("VENDOR-01"),
-    image: UploadFile = File(None)
+    product_image: UploadFile = File(None),
+    image: UploadFile = File(None),
+    image_url: str = Form("")
 ):
     db = SessionLocal()
     try:
-        image_path = ""
-        if image and image.filename:
-            filename = f"{uuid.uuid4().hex}_{image.filename}"
+        # Check which file sent - both optional
+        file_obj = None
+        if product_image and product_image.filename:
+            file_obj = product_image
+        elif image and image.filename:
+            file_obj = image
+
+        image_path = image_url or "" # If user gave URL, use it
+        if file_obj and file_obj.filename:
+            filename = f"{uuid.uuid4().hex}_{file_obj.filename}"
             file_location = f"uploads/products/{filename}"
             with open(file_location, "wb") as buffer:
-                shutil.copyfileobj(image.file, buffer)
+                shutil.copyfileobj(file_obj.file, buffer)
             image_path = f"/{file_location}"
-            print(f"Image saved: {image_path}")
+            print(f"✅ Product Image saved: {image_path}")
+        else:
+            print(f"ℹ️ No image uploaded, using URL or blank: {image_path}")
 
-        p = Product(
-            name=name,
-            price=float(price),
-            stock=int(stock),
-            image=image_path,
-            vendor_id=vendor_id,
-            category=category
-        )
+        p = Product(name=name, price=float(price), stock=int(stock), image=image_path, vendor_id=vendor_id, category=category)
         db.add(p)
         db.commit()
         db.refresh(p)
@@ -421,21 +395,18 @@ def get_vendor_products(vendor_id: str):
     products = db.query(Product).filter(Product.vendor_id == vendor_id).all()
     db.close()
     return products
-
 @app.get("/api/my-orders/{phone}")
 def my_orders(phone: str):
     db = SessionLocal()
     orders = db.query(Order).filter((Order.customer_phone == phone) | (Order.phone == phone)).all()
     db.close()
     return orders
-
 @app.get("/api/vendor/orders/{vendor_id}")
 def vendor_orders(vendor_id: str):
     db = SessionLocal()
     orders = db.query(Order).filter(Order.vendor_id == vendor_id, Order.status == "New").all()
     db.close()
     return orders
-
 @app.post("/api/vendor/orders/{order_id}/accept")
 def vendor_accept(order_id: str):
     db = SessionLocal()
@@ -447,7 +418,6 @@ def vendor_accept(order_id: str):
     db.commit()
     db.close()
     return {"success": True, "order": o}
-
 @app.post("/api/orders")
 def place_order(data: dict):
     db = SessionLocal()
@@ -463,7 +433,6 @@ def place_order(data: dict):
     db.refresh(new_order)
     db.close()
     return new_order
-
 @app.get("/rider/{rider_id}")
 def get_rider(rider_id: str):
     db = SessionLocal()
@@ -471,7 +440,6 @@ def get_rider(rider_id: str):
     db.close()
     if not rider: raise HTTPException(status_code=404, detail="Rider not found")
     return rider
-
 @app.put("/rider/{rider_id}")
 def update_rider(rider_id: str, data: ProfileUpdateRequest):
     db = SessionLocal()
@@ -489,21 +457,18 @@ def update_rider(rider_id: str, data: ProfileUpdateRequest):
     db.refresh(rider)
     db.close()
     return {"message": "Profile Updated", "rider": rider}
-
 @app.get("/orders")
 def get_orders(status: Optional[str] = None):
     db = SessionLocal()
     orders = db.query(Order).filter(Order.status == status).all() if status else db.query(Order).all()
     db.close()
     return orders
-
 @app.get("/api/rider/orders")
 def get_rider_available_orders():
     db = SessionLocal()
     orders = db.query(Order).filter(Order.status.in_(["New","Accepted_by_Vendor", "Assigned", "Picked Up", "Accepted_by_Rider"])).all()
     db.close()
     return orders
-
 @app.post("/api/assign-rider")
 def assign_rider(order_id: str, rider_id: str):
     db = SessionLocal()
@@ -516,7 +481,6 @@ def assign_rider(order_id: str, rider_id: str):
     db.commit()
     db.close()
     return {"status": "success", "order": o}
-
 @app.post("/verify-qr")
 def verify_qr(req: QrVerifyRequest):
     db = SessionLocal()
@@ -529,7 +493,6 @@ def verify_qr(req: QrVerifyRequest):
     db.commit()
     db.close()
     return {"success": True, "order": order}
-
 @app.post("/verify-otp")
 def verify_otp(req: OtpVerifyRequest):
     db = SessionLocal()
@@ -548,7 +511,6 @@ def verify_otp(req: OtpVerifyRequest):
     earning = order.earning
     db.close()
     return {"success": True, "earning": earning}
-
 @app.post("/api/rider/orders/{order_id}/accept")
 def rider_accept_order(order_id: str, data: dict):
     db = SessionLocal()
@@ -561,7 +523,6 @@ def rider_accept_order(order_id: str, data: dict):
     db.commit()
     db.close()
     return {"success": True, "id": o.id, "status": o.status}
-
 @app.post("/api/rider/orders/{order_id}/deliver")
 def rider_deliver_order(order_id: str, data: dict):
     db = SessionLocal()
@@ -579,7 +540,6 @@ def rider_deliver_order(order_id: str, data: dict):
     db.commit()
     db.close()
     return {"success": True, "status": "Delivered", "earning": o.earning}
-
 @app.post("/withdraw")
 def withdraw_money(req: WithdrawRequest):
     db = SessionLocal()
@@ -595,7 +555,6 @@ def withdraw_money(req: WithdrawRequest):
     remaining = rider.earning
     db.close()
     return {"success": True, "remaining_balance": remaining}
-
 @app.post("/api/rider/payout/request")
 def request_payout(data: dict):
     db = SessionLocal()
@@ -609,21 +568,18 @@ def request_payout(data: dict):
     db.refresh(payout)
     db.close()
     return {"success": True, "message": f"₹{amount} payout processing", "payout": payout}
-
 @app.get("/api/rider/payouts/{rider_id}")
 def get_payouts(rider_id: str):
     db = SessionLocal()
     p = db.query(Payout).filter(Payout.rider_id == rider_id).all()
     db.close()
     return p
-
 @app.get("/api/admin/payouts")
 def get_all_payouts():
     db = SessionLocal()
     p = db.query(Payout).all()
     db.close()
     return p
-
 @app.post("/api/admin/payouts/{payout_id}/approve")
 def approve_payout(payout_id: str):
     db = SessionLocal()
@@ -635,9 +591,7 @@ def approve_payout(payout_id: str):
     db.commit()
     db.close()
     return {"success": True, "message": "Payout Completed!"}
-
 rider_profiles = {}
-
 @app.post("/api/rider/register")
 async def register_rider(rider_id: str = Form(...), name: str = Form(...), phone: str = Form(...), bike_number: str = Form(...), photo: UploadFile = File(None), rc: UploadFile = File(None), license: UploadFile = File(None), aadhaar: UploadFile = File(None)):
     def save_file(f, prefix):
@@ -659,14 +613,12 @@ async def register_rider(rider_id: str = Form(...), name: str = Form(...), phone
     profile = {"rider_id": rider_id, "name": name, "phone": phone, "bike_number": bike_number, "photo_url": save_file(photo, "photo"), "rc_url": save_file(rc, "rc"), "license_url": save_file(license, "license"), "aadhaar_url": save_file(aadhaar, "aadhaar"), "is_verified": False, "created_at": str(datetime.now())}
     rider_profiles[rider_id] = profile
     return {"status": "success", "profile": profile, "message": "Uploaded"}
-
 @app.get("/api/admin/riders")
 def admin_get_all_riders():
     db = SessionLocal()
     riders = db.query(Rider).all()
     db.close()
     return riders
-
 @app.post("/api/admin/riders/{rider_id}/verify")
 def admin_verify_rider_by_id(rider_id: str):
     db = SessionLocal()
@@ -678,11 +630,9 @@ def admin_verify_rider_by_id(rider_id: str):
     db.commit()
     db.close()
     return {"success": True, "message": f"{rider_id} Verified!"}
-
 @app.post("/api/admin/verify-rider/{rider_id}")
 def verify_rider_old(rider_id: str):
     return admin_verify_rider_by_id(rider_id)
-
 @app.post("/api/admin/orders/{order_id}/status")
 def admin_update_order_status(order_id: str, data: dict):
     db = SessionLocal()

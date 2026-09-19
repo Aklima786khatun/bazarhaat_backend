@@ -119,11 +119,24 @@ except Exception as e:
 
 try:
     with engine.connect() as conn:
-        conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS vendor_id VARCHAR;"))
-        conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS category VARCHAR DEFAULT 'General';"))
-        conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS original_price FLOAT DEFAULT 0;"))
-        conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS discount FLOAT DEFAULT 0;"))
-        conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS offer_text VARCHAR DEFAULT '';"))
+        if "sqlite" in DATABASE_URL:
+            for col_sql in [
+                "ALTER TABLE products ADD COLUMN vendor_id VARCHAR;",
+                "ALTER TABLE products ADD COLUMN category VARCHAR DEFAULT 'General';",
+                "ALTER TABLE products ADD COLUMN original_price FLOAT DEFAULT 0;",
+                "ALTER TABLE products ADD COLUMN discount FLOAT DEFAULT 0;",
+                "ALTER TABLE products ADD COLUMN offer_text VARCHAR DEFAULT '';",
+            ]:
+                try:
+                    conn.execute(text(col_sql))
+                except Exception:
+                    pass  # Column already exists
+        else:
+            conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS vendor_id VARCHAR;"))
+            conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS category VARCHAR DEFAULT 'General';"))
+            conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS original_price FLOAT DEFAULT 0;"))
+            conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS discount FLOAT DEFAULT 0;"))
+            conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS offer_text VARCHAR DEFAULT '';"))
         conn.commit()
         print("✅ Migration OK")
 except Exception as e:

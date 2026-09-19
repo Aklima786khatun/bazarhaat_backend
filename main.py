@@ -9,7 +9,6 @@ import uuid
 import shutil
 import os
 import base64
-import random
 from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from urllib.parse import quote_plus
@@ -52,6 +51,9 @@ class Product(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String)
     price = Column(Float)
+    original_price = Column(Float, default=0)
+    discount = Column(Float, default=0)
+    offer_text = Column(String, default="")
     stock = Column(Integer)
     image = Column(Text)
     category = Column(String, default="General")
@@ -118,23 +120,18 @@ except Exception as e:
 
 try:
     with engine.connect() as conn:
-        if "sqlite" not in DATABASE_URL:
-            conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS vendor_id VARCHAR;"))
-            conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS category VARCHAR DEFAULT 'General';"))
-            conn.commit()
+        conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS vendor_id VARCHAR;"))
+        conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS category VARCHAR DEFAULT 'General';"))
+        conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS original_price FLOAT DEFAULT 0;"))
+        conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS discount FLOAT DEFAULT 0;"))
+        conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS offer_text VARCHAR DEFAULT '';"))
+        conn.commit()
+        print("✅ Migration OK")
 except Exception as e:
     print(f"DB Fix Note: {e}")
 
-# ===== SINGLE APP INSTANCE - YAHI SAHI HAI =====
 app = FastAPI(title="BazarHaat Backend", version="2.0.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 os.makedirs("uploads/riders", exist_ok=True)
 os.makedirs("uploads/products", exist_ok=True)
 
@@ -152,8 +149,8 @@ def init_data():
             db.commit()
         if db.query(Product).count() == 0:
             db.add_all([
-                Product(name="Fresh Tomato 1kg", price=40, stock=100, image="https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=200", vendor_id="VENDOR-01", category="Vegetables"),
-                Product(name="Amul Milk 1L", price=65, stock=50, image="https://images.unsplash.com/photo-1550583724-b2692b85b150?w=200", vendor_id="VENDOR-01", category="Dairy"),
+                Product(name="Fresh Tomato 1kg", price=40, original_price=50, discount=20, offer_text="20% OFF", stock=100, image="https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=200", vendor_id="VENDOR-01", category="Vegetables"),
+                Product(name="Amul Milk 1L", price=65, original_price=70, discount=7, offer_text="7% OFF", stock=50, image="https://images.unsplash.com/photo-1550583724-b2692b85b150?w=200", vendor_id="VENDOR-01", category="Dairy"),
             ])
             db.commit()
         if db.query(Rider).count() == 0:
@@ -349,7 +346,7 @@ def get_products(category: Optional[str] = None):
 def vendor_add_product(product: dict):
     db = SessionLocal()
     try:
-        price = product.get("price") or product.get("sell_price") or 0
+        price = product.get("price") or 0
         name = product.get("name")
         if not name:
             raise HTTPException(status_code=400, detail="Product name required")
@@ -359,21 +356,19 @@ def vendor_add_product(product: dict):
             try:
                 header, encoded = image_data.split(",", 1)
                 ext = "jpg"
-                if "png" in header: ext = "png"
-                if "webp" in header: ext = "webp"
                 filename = f"{uuid.uuid4().hex}.{ext}"
                 file_location = f"uploads/products/{filename}"
                 os.makedirs("uploads/products", exist_ok=True)
                 with open(file_location, "wb") as f:
                     f.write(base64.b64decode(encoded))
                 final_image_path = f"/{file_location}"
-            except Exception as e:
+            except:
                 final_image_path = "https://images.unsplash.com/photo-1542838132-92c53300491e?w=400"
-        p = Product(name=name, price=float(price), stock=int(product.get("stock", 100)), image=str(final_image_path), vendor_id=product.get("vendor_id") or "VENDOR-01", category=product.get("category", "General"))
+        p = Product(name=name, price=float(price), original_price=float(product.get("original_price", price)), discount=float(product.get("discount", 0)), offer_text=product.get("offer_text",""), stock=int(product.get("stock", 100)), image=str(final_image_path), vendor_id=product.get("vendor_id") or "VENDOR-01", category=product.get("category", "General"))
         db.add(p)
         db.commit()
         db.refresh(p)
-        return {"id": p.id, "name": p.name, "price": p.price, "stock": p.stock, "image": p.image, "category": p.category, "vendor_id": p.vendor_id}
+        return {"id": p.id, "name": p.name, "price": p.price, "original_price": p.original_price, "discount": p.discount}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -384,17 +379,19 @@ def vendor_add_product(product: dict):
 async def add_product_with_image(
     name: str = Form(...),
     price: float = Form(...),
+    original_price: float = Form(0),
+    discount: float = Form(0),
+    offer_text: str = Form(""),
     stock: int = Form(100),
     category: str = Form("General"),
     vendor_id: str = Form("VENDOR-01"),
     product_image: UploadFile = File(None),
     image: UploadFile = File(None),
-    image_url: str = Form("")
 ):
     db = SessionLocal()
     try:
         file_obj = product_image if product_image and product_image.filename else image
-        image_path = image_url or ""
+        image_path = ""
         if file_obj and file_obj.filename:
             filename = f"{uuid.uuid4().hex}_{file_obj.filename}"
             file_location = f"uploads/products/{filename}"
@@ -404,11 +401,17 @@ async def add_product_with_image(
             image_path = f"/{file_location}"
         if not image_path:
             image_path = "https://images.unsplash.com/photo-1542838132-92c53300491e?w=400"
-        p = Product(name=name, price=float(price), stock=int(stock), image=image_path, vendor_id=vendor_id, category=category)
+
+        if original_price > 0 and original_price > price and discount == 0:
+            discount = round(((original_price - price) / original_price) * 100)
+        if discount > 0 and not offer_text:
+            offer_text = f"{int(discount)}% OFF"
+
+        p = Product(name=name, price=float(price), original_price=float(original_price), discount=float(discount), offer_text=offer_text, stock=int(stock), image=image_path, vendor_id=vendor_id, category=category)
         db.add(p)
         db.commit()
         db.refresh(p)
-        return {"id": p.id, "name": p.name, "price": p.price, "stock": p.stock, "image": p.image, "category": p.category, "vendor_id": p.vendor_id}
+        return {"id": p.id, "name": p.name, "price": p.price, "original_price": p.original_price, "discount": p.discount, "offer_text": p.offer_text, "stock": p.stock, "image": p.image, "category": p.category, "vendor_id": p.vendor_id}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -488,7 +491,7 @@ def update_rider(rider_id: str, data: ProfileUpdateRequest):
     db.commit()
     db.refresh(rider)
     db.close()
-    return {"message": "Profile Updated", "rider": {"id": rider.id, "name": rider.name}}
+    return {"message": "Profile Updated"}
 
 @app.get("/orders")
 def get_orders(status: Optional[str] = None):
@@ -515,7 +518,7 @@ def assign_rider(order_id: str, rider_id: str):
     o.status = "Assigned"
     db.commit()
     db.close()
-    return {"status": "success", "order_id": o.id}
+    return {"status": "success"}
 
 @app.post("/verify-qr")
 def verify_qr(req: QrVerifyRequest):
@@ -528,7 +531,7 @@ def verify_qr(req: QrVerifyRequest):
     order.rider_id = req.rider_id
     db.commit()
     db.close()
-    return {"success": True, "order_id": order.id}
+    return {"success": True}
 
 @app.post("/verify-otp")
 def verify_otp(req: OtpVerifyRequest):
@@ -545,9 +548,8 @@ def verify_otp(req: OtpVerifyRequest):
         rider = db.query(Rider).filter(Rider.id == order.rider_id).first()
         if rider: rider.earning += order.earning
     db.commit()
-    earning = order.earning
     db.close()
-    return {"success": True, "earning": earning}
+    return {"success": True}
 
 @app.post("/api/rider/orders/{order_id}/accept")
 def rider_accept_order(order_id: str, data: dict):
@@ -560,7 +562,7 @@ def rider_accept_order(order_id: str, data: dict):
     o.rider_id = data.get("rider_id", "RIDER-01")
     db.commit()
     db.close()
-    return {"success": True, "id": o.id, "status": o.status}
+    return {"success": True}
 
 @app.post("/api/rider/orders/{order_id}/deliver")
 def rider_deliver_order(order_id: str, data: dict):
@@ -578,7 +580,7 @@ def rider_deliver_order(order_id: str, data: dict):
         if rider: rider.earning += o.earning
     db.commit()
     db.close()
-    return {"success": True, "status": "Delivered", "earning": o.earning}
+    return {"success": True}
 
 @app.post("/withdraw")
 def withdraw_money(req: WithdrawRequest):
@@ -592,9 +594,8 @@ def withdraw_money(req: WithdrawRequest):
         raise HTTPException(status_code=400, detail="Insufficient Balance")
     rider.earning -= req.amount
     db.commit()
-    remaining = rider.earning
     db.close()
-    return {"success": True, "remaining_balance": remaining}
+    return {"success": True}
 
 @app.post("/api/rider/payout/request")
 def request_payout(data: dict):
@@ -606,9 +607,8 @@ def request_payout(data: dict):
     payout = Payout(id=f"PAY-{uuid.uuid4().hex[:4].upper()}", rider_id=data.get("rider_id", "RIDER-01"), amount=amount, method=data.get("method","UPI"), upi_id=data.get("upi_id",""), bank_account=data.get("bank_account",""), ifsc=data.get("ifsc",""), status="Processing")
     db.add(payout)
     db.commit()
-    db.refresh(payout)
     db.close()
-    return {"success": True, "message": f"₹{amount} payout processing", "payout": {"id": payout.id}}
+    return {"success": True}
 
 @app.get("/api/rider/payouts/{rider_id}")
 def get_payouts(rider_id: str):
@@ -634,7 +634,7 @@ def approve_payout(payout_id: str):
     p.status = "Completed"
     db.commit()
     db.close()
-    return {"success": True, "message": "Payout Completed!"}
+    return {"success": True}
 
 rider_profiles = {}
 
@@ -656,9 +656,9 @@ async def register_rider(rider_id: str = Form(...), name: str = Form(...), phone
         rider.vehicle = bike_number
     db.commit()
     db.close()
-    profile = {"rider_id": rider_id, "name": name, "phone": phone, "bike_number": bike_number, "photo_url": save_file(photo, "photo"), "rc_url": save_file(rc, "rc"), "license_url": save_file(license, "license"), "aadhaar_url": save_file(aadhaar, "aadhaar"), "is_verified": False, "created_at": str(datetime.now())}
+    profile = {"rider_id": rider_id, "name": name, "phone": phone, "bike_number": bike_number, "photo_url": save_file(photo, "photo"), "rc_url": save_file(rc, "rc"), "license_url": save_file(license, "license"), "aadhaar_url": save_file(aadhaar, "aadhaar"), "is_verified": False}
     rider_profiles[rider_id] = profile
-    return {"status": "success", "profile": profile, "message": "Uploaded"}
+    return {"status": "success", "profile": profile}
 
 @app.get("/api/admin/riders")
 def admin_get_all_riders():
@@ -677,7 +677,7 @@ def admin_verify_rider_by_id(rider_id: str):
     rider.is_verified = True
     db.commit()
     db.close()
-    return {"success": True, "message": f"{rider_id} Verified!"}
+    return {"success": True}
 
 @app.post("/api/admin/verify-rider/{rider_id}")
 def verify_rider_old(rider_id: str):

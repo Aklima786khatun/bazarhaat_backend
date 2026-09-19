@@ -58,6 +58,7 @@ class Product(Base):
     image = Column(Text)
     category = Column(String, default="General")
     vendor_id = Column(String)
+
 class Rider(Base):
     __tablename__ = "riders"
     id = Column(String, primary_key=True)
@@ -117,20 +118,21 @@ try:
 except Exception as e:
     print(f"❌ DB Error: {e}")
 
+# FIXED MIGRATION FOR SQLITE + POSTGRES
 try:
     with engine.connect() as conn:
         if "sqlite" in DATABASE_URL:
-            for col_sql in [
-                "ALTER TABLE products ADD COLUMN vendor_id VARCHAR;",
-                "ALTER TABLE products ADD COLUMN category VARCHAR DEFAULT 'General';",
-                "ALTER TABLE products ADD COLUMN original_price FLOAT DEFAULT 0;",
-                "ALTER TABLE products ADD COLUMN discount FLOAT DEFAULT 0;",
-                "ALTER TABLE products ADD COLUMN offer_text VARCHAR DEFAULT '';",
+            for sql in [
+                "ALTER TABLE products ADD COLUMN vendor_id VARCHAR",
+                "ALTER TABLE products ADD COLUMN category VARCHAR DEFAULT 'General'",
+                "ALTER TABLE products ADD COLUMN original_price FLOAT DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN discount FLOAT DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN offer_text VARCHAR DEFAULT ''",
             ]:
                 try:
-                    conn.execute(text(col_sql))
-                except Exception:
-                    pass  # Column already exists
+                    conn.execute(text(sql))
+                except:
+                    pass
         else:
             conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS vendor_id VARCHAR;"))
             conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS category VARCHAR DEFAULT 'General';"))

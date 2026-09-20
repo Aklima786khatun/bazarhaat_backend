@@ -15,7 +15,10 @@ from sqlalchemy import create_engine, Column, Integer, String, Text, Float, Date
 from sqlalchemy.orm import declarative_base, sessionmaker
 from urllib.parse import quote_plus
 
-DB_PASSWORD = "Bazarhaat@123"
+import os
+from urllib.parse import quote_plus
+
+DB_PASSWORD = os.getenv("DB_PASSWORD", "Bazarhaat@123")
 DATABASE_URL_ENV = os.getenv("DATABASE_URL")
 
 if DATABASE_URL_ENV:
@@ -24,14 +27,24 @@ if DATABASE_URL_ENV:
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 else:
     if os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_HOSTNAME"):
-        DATABASE_URL = "sqlite:///./bazarhaat.db"
+        # Render pe DATABASE_URL compulsory hai - SQLite allow nahi
+        raise Exception("❌ DATABASE_URL not set on Render! Go to Environment and add Postgres Internal URL")
     else:
+        # Local laptop ke liye
         DATABASE_URL = f"postgresql://postgres:{quote_plus(DB_PASSWORD)}@localhost:5433/bazarhaat"
 
+print(f"🔗 Using DB: {DATABASE_URL.split('@')[-1] if '@' in DATABASE_URL else DATABASE_URL}")
+
+# Engine creation - ye add karna mat bhoolna
 if "sqlite" in DATABASE_URL:
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:
-    engine = create_engine(DATABASE_URL)
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=20
+    )
 
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
@@ -166,7 +179,6 @@ os.makedirs("uploads/products", exist_ok=True)
 
 FIXED_CATEGORIES = ["Vegetables", "Fruits", "Dairy", "Groceries", "Electronic Accessories", "Pharmacy", "Clothes", "Kids", "Beauty", "Pet Care", "Beverages"]
 db_settings = {"isUserAppLive": True, "isVendorAppLive": True, "isRiderAppLive": True, "isMainWebsiteLive": True, "deliveryCharge": 20, "commission": 5, "appMessage": "Welcome to BazarHaat"}
-
 def init_data():
     db = SessionLocal()
     try:
@@ -368,6 +380,100 @@ def rider_reject(rider_id: str):
 @app.post("/api/rider/penalty/{rider_id}")
 def rider_penalty(rider_id: str, data: dict):
     return {"success": True, "message": f"Penalty applied to {rider_id}"}
+@app.get("/api/settings")
+def get_settings_api(): return db_settings
+
+@app.post("/api/settings")
+def update_settings_api(data: dict):
+    db_settings.update(data)
+    return {"success": True}
+class ProductCreate(BaseModel):
+    name: str
+    price: float
+    original_price: Optional[float] = None
+    discount: Optional[float] = 0
+    offer_text: Optional[str] = ""
+    stock: Optional[int] = 100
+    image: Optional[str] = ""
+    category: Optional[str] = "Vegetables"
+    vendor_id: str
+
+@app.post("/api/products")
+def create_product(product: ProductCreate):
+    db = SessionLocal()
+    try:
+        if not product.vendor_id:
+            raise HTTPException(status_code=400, detail="vendor_id required")
+        new_product = Product(
+            name=product.name,
+            price=float(product.price),
+            original_price=float(product.original_price or product.price),
+            discount=float(product.discount or 0),
+            offer_text=product.offer_text or "",
+            stock=int(product.stock or 100),
+            image=product.image or "https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=200",
+            category=product.category or "Vegetables",
+            vendor_id=product.vendor_id
+        )
+        db.add(new_product)
+        db.commit()
+        db.refresh(new_product)
+        print(f"✅ Product Created: {new_product.id} - {new_product.name}")
+        return new_product
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Product Create Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.post("/api/vendor/products")
+async def create_product_with_image(
+    name: str = Form(...),
+    price: float = Form(...),
+    original_price: float = Form(None),
+    stock: int = Form(100),
+    category: str = Form("Vegetables"),
+    vendor_id: str = Form(...),
+    discount: float = Form(0),
+    offer_text: str = Form(""),
+    image: UploadFile = File(None)
+):
+    db = SessionLocal()
+    try:
+        image_url = ""
+        if image and image.filename:
+            os.makedirs("uploads/products", exist_ok=True)
+            filename = f"{uuid.uuid4().hex}_{image.filename}"
+            path = f"uploads/products/{filename}"
+            with open(path, "wb") as buffer:
+                shutil.copyfileobj(image.file, buffer)
+            image_url = f"/{path}"
+        else:
+            image_url = "https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=200"
+
+        new_product = Product(
+            name=name,
+            price=float(price),
+            original_price=float(original_price or price),
+            discount=float(discount or 0),
+            offer_text=offer_text or "",
+            stock=int(stock),
+            image=image_url,
+            category=category,
+            vendor_id=vendor_id
+        )
+        db.add(new_product)
+        db.commit()
+        db.refresh(new_product)
+        print(f"✅ Product Created (with image): {new_product.id} - {new_product.name}")
+        return new_product
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Product Create Error (vendor): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
 
 @app.post("/api/rider/register")
 async def register_rider(rider_id: str = Form(...), name: str = Form(...), phone: str = Form(...), bike_number: str = Form(...), photo: UploadFile = File(None), rc: UploadFile = File(None), license: UploadFile = File(None), aadhaar: UploadFile = File(None)):

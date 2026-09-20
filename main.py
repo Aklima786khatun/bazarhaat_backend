@@ -7,13 +7,15 @@ from datetime import datetime
 import uvicorn
 import uuid
 import shutil
-import os
 import random
 import time
 import base64
 from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, text
 from sqlalchemy.orm import declarative_base, sessionmaker
+
+import os
 from urllib.parse import quote_plus
+
 DB_PASSWORD = os.getenv("DB_PASSWORD", "Bazarhaat@123")
 DATABASE_URL_ENV = os.getenv("DATABASE_URL")
 
@@ -424,21 +426,22 @@ def create_product(product: ProductCreate):
     finally:
         db.close()
 
+from typing import Optional
+
 @app.post("/api/vendor/products")
 async def create_product_with_image(
     name: str = Form(...),
     price: float = Form(...),
-    original_price: float = Form(None),
-    stock: int = Form(100),
-    category: str = Form("Vegetables"),
+    original_price: Optional[float] = Form(None),
+    stock: Optional[int] = Form(100),
+    category: Optional[str] = Form("Vegetables"),
     vendor_id: str = Form(...),
-    discount: float = Form(0),
-    offer_text: str = Form(""),
+    discount: Optional[float] = Form(0),
+    offer_text: Optional[str] = Form(""),
     image: UploadFile = File(None)
 ):
     db = SessionLocal()
     try:
-        image_url = ""
         if image and image.filename:
             os.makedirs("uploads/products", exist_ok=True)
             filename = f"{uuid.uuid4().hex}_{image.filename}"
@@ -452,22 +455,21 @@ async def create_product_with_image(
         new_product = Product(
             name=name,
             price=float(price),
-            original_price=float(original_price or price),
-            discount=float(discount or 0),
+            original_price=float(original_price) if original_price else float(price),
+            discount=float(discount) if discount else 0,
             offer_text=offer_text or "",
-            stock=int(stock),
+            stock=int(stock) if stock else 100,
             image=image_url,
-            category=category,
+            category=category or "Vegetables",
             vendor_id=vendor_id
         )
         db.add(new_product)
         db.commit()
         db.refresh(new_product)
-        print(f"✅ Product Created (with image): {new_product.id} - {new_product.name}")
         return new_product
     except Exception as e:
         db.rollback()
-        print(f"❌ Product Create Error (vendor): {e}")
+        print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()

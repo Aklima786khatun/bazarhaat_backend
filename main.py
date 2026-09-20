@@ -14,10 +14,6 @@ import base64
 from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from urllib.parse import quote_plus
-
-import os
-from urllib.parse import quote_plus
-
 DB_PASSWORD = os.getenv("DB_PASSWORD", "Bazarhaat@123")
 DATABASE_URL_ENV = os.getenv("DATABASE_URL")
 
@@ -387,6 +383,7 @@ def get_settings_api(): return db_settings
 def update_settings_api(data: dict):
     db_settings.update(data)
     return {"success": True}
+
 class ProductCreate(BaseModel):
     name: str
     price: float
@@ -474,6 +471,39 @@ async def create_product_with_image(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
+@app.get("/api/vendor/stats/{vendor_id}")
+def vendor_stats(vendor_id: str):
+    db = SessionLocal()
+    try:
+        product_count = db.query(Product).filter(Product.vendor_id == vendor_id).count()
+        orders = db.query(Order).filter(Order.vendor_id == vendor_id).all()
+        total_orders = len(orders)
+        new_orders = len([o for o in orders if o.status == "New"])
+        earnings = sum([o.amount for o in orders if o.status == "Delivered"]) if orders else 0
+        return {"product_count": product_count, "total_orders": total_orders, "new_orders": new_orders, "vendor_id": vendor_id, "earnings": earnings}
+    finally: db.close()
+
+@app.get("/api/vendor/products/{vendor_id}")
+def get_vendor_products(vendor_id: str):
+    db = SessionLocal(); products = db.query(Product).filter(Product.vendor_id == vendor_id).all(); db.close(); return products
+
+@app.get("/api/vendor/orders/{vendor_id}")
+def get_vendor_orders(vendor_id: str):
+    db = SessionLocal(); orders = db.query(Order).filter(Order.vendor_id == vendor_id).all(); db.close(); return orders
+
+@app.delete("/api/products/{product_id}")
+def delete_product(product_id: int):
+    db = SessionLocal(); p = db.query(Product).filter(Product.id == product_id).first()
+    if not p: db.close(); raise HTTPException(status_code=404, detail="Product not found")
+    db.delete(p); db.commit(); db.close(); return {"success": True, "deleted_id": product_id, "message": "Product deleted"}
+
+@app.put("/api/products/{product_id}")
+def update_product(product_id: int, data: dict):
+    db = SessionLocal(); p = db.query(Product).filter(Product.id == product_id).first()
+    if not p: db.close(); raise HTTPException(status_code=404, detail="Product not found")
+    for key, value in data.items():
+        if hasattr(p, key): setattr(p, key, value)
+    db.commit(); db.refresh(p); db.close(); return p
 
 @app.post("/api/rider/register")
 async def register_rider(rider_id: str = Form(...), name: str = Form(...), phone: str = Form(...), bike_number: str = Form(...), photo: UploadFile = File(None), rc: UploadFile = File(None), license: UploadFile = File(None), aadhaar: UploadFile = File(None)):

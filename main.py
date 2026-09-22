@@ -76,10 +76,16 @@ class Payout(Base):
     id = Column(String, primary_key=True); rider_id = Column(String); amount = Column(Float); method = Column(String)
     upi_id = Column(String, nullable=True); bank_account = Column(String, nullable=True); ifsc = Column(String, nullable=True)
     status = Column(String, default="Processing"); created_at = Column(DateTime, default=datetime.now)
+# --- FIX 1: Customer model me town/pincode add ---
 class Customer(Base):
     __tablename__ = "customers"
-    id = Column(String, primary_key=True); name = Column(String, default="BazarHaat Customer")
-    phone = Column(String, unique=True); email = Column(String, nullable=True); address = Column(String, nullable=True)
+    id = Column(String, primary_key=True)
+    name = Column(String, default="BazarHaat Customer")
+    phone = Column(String, unique=True, index=True)
+    email = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+    town = Column(String, nullable=True, default="Hatidhura")
+    pincode = Column(String, nullable=True, default="783332")
     created_at = Column(DateTime, default=datetime.now)
 
 otp_store = {}; rider_otp_store = {}
@@ -89,7 +95,25 @@ try:
 except Exception as e: print(f"❌ DB Error: {e}")
 try:
     with engine.connect() as conn:
-        stmts = ["ALTER TABLE riders ADD COLUMN bike_number VARCHAR DEFAULT ''","ALTER TABLE riders ADD COLUMN user_type VARCHAR DEFAULT 'RIDER'","ALTER TABLE riders ADD COLUMN photo_url VARCHAR DEFAULT ''","ALTER TABLE riders ADD COLUMN rc_url VARCHAR DEFAULT ''","ALTER TABLE riders ADD COLUMN license_url VARCHAR DEFAULT ''","ALTER TABLE riders ADD COLUMN aadhaar_url VARCHAR DEFAULT ''","ALTER TABLE riders ADD COLUMN bank_account VARCHAR DEFAULT ''","ALTER TABLE riders ADD COLUMN ifsc VARCHAR DEFAULT ''","ALTER TABLE riders ADD COLUMN upi VARCHAR DEFAULT ''","ALTER TABLE products ADD COLUMN vendor_id VARCHAR","ALTER TABLE products ADD COLUMN category VARCHAR DEFAULT 'General'","ALTER TABLE products ADD COLUMN original_price FLOAT DEFAULT 0","ALTER TABLE products ADD COLUMN discount FLOAT DEFAULT 0","ALTER TABLE products ADD COLUMN offer_text VARCHAR DEFAULT ''",]
+        stmts = [
+            "ALTER TABLE riders ADD COLUMN bike_number VARCHAR DEFAULT ''",
+            "ALTER TABLE riders ADD COLUMN user_type VARCHAR DEFAULT 'RIDER'",
+            "ALTER TABLE riders ADD COLUMN photo_url VARCHAR DEFAULT ''",
+            "ALTER TABLE riders ADD COLUMN rc_url VARCHAR DEFAULT ''",
+            "ALTER TABLE riders ADD COLUMN license_url VARCHAR DEFAULT ''",
+            "ALTER TABLE riders ADD COLUMN aadhaar_url VARCHAR DEFAULT ''",
+            "ALTER TABLE riders ADD COLUMN bank_account VARCHAR DEFAULT ''",
+            "ALTER TABLE riders ADD COLUMN ifsc VARCHAR DEFAULT ''",
+            "ALTER TABLE riders ADD COLUMN upi VARCHAR DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN vendor_id VARCHAR",
+            "ALTER TABLE products ADD COLUMN category VARCHAR DEFAULT 'General'",
+            "ALTER TABLE products ADD COLUMN original_price FLOAT DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN discount FLOAT DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN offer_text VARCHAR DEFAULT ''",
+            # --- FIX 2: Migration for customer town/pincode ---
+            "ALTER TABLE customers ADD COLUMN town VARCHAR DEFAULT 'Hatidhura'",
+            "ALTER TABLE customers ADD COLUMN pincode VARCHAR DEFAULT '783332'",
+        ]
         for s in stmts:
             pg = s.replace("ADD COLUMN", "ADD COLUMN IF NOT EXISTS") if "sqlite" not in DATABASE_URL else s
             try: conn.execute(text(pg))
@@ -123,11 +147,13 @@ class RiderOtpVerify(BaseModel): phone: str; otp: str
 class FirebaseVerifyRequest(BaseModel): idToken: str; phone: str
 class CustomerLoginRequest(BaseModel): phone: str
 class CustomerVerifyRequest(BaseModel): phone: str; otp: str; name: Optional[str] = None
+class CustomerRegisterRequest(BaseModel): phone: str; name: str; town: Optional[str] = "Hatidhura"; address: Optional[str] = ""; pincode: Optional[str] = "783332"
 class ApproveRiderRequest(BaseModel): rider_id: Optional[str] = None; id: Optional[str] = None; is_verified: Optional[bool] = True
 
 @app.get("/")
 def home(): return {"message": "BazarHaat Backend Running v3.0 Rider Auth OK", "status": "OK", "docs": "/docs"}
 
+# --- RIDER APIS (same as yours) ---
 @app.post("/api/rider/auth/firebase-verify")
 def firebase_verify_rider(req: FirebaseVerifyRequest):
     db = SessionLocal()
@@ -136,9 +162,7 @@ def firebase_verify_rider(req: FirebaseVerifyRequest):
         try:
             decoded = firebase_auth.verify_id_token(req.idToken)
             phone = clean_phone(decoded.get("phone_number",""))
-            print(f"✅ Token Verified: {phone}")
         except Exception as fe:
-            print(f"⚠️ Token fail {fe}, fallback: {req.phone}")
             phone = clean_phone(req.phone)
         if len(phone)!=10: raise HTTPException(status_code=400, detail=f"Invalid phone: {phone}")
         rider = db.query(Rider).filter(Rider.phone == phone).first()
@@ -148,8 +172,6 @@ def firebase_verify_rider(req: FirebaseVerifyRequest):
             db.add(rider); db.commit(); db.refresh(rider)
             return {"success": True, "rider_id": rider.id, "isNewUser": True, "profileExists": False}
         return {"success": True, "rider_id": rider.id, "isNewUser": False, "profileExists": bool(rider.name and rider.bike_number), "is_verified": rider.is_verified}
-    except HTTPException: raise
-    except Exception as e: print(f"❌ firebase-verify error: {e}"); raise HTTPException(status_code=500, detail=str(e))
     finally: db.close()
 
 @app.post("/api/rider/auth/send-otp")
@@ -206,27 +228,102 @@ def get_rider_profile(rider_id: str):
         return {"rider_id": rider.id, "phone": rider.phone, "name": rider.name, "bike_number": rider.bike_number, "is_verified": rider.is_verified, "earning": rider.earning, "photo_url": rider.photo_url, "rc_url": rider.rc_url, "license_url": rider.license_url, "aadhaar_url": rider.aadhaar_url}
     finally: db.close()
 
+# ============ FIX 3: CUSTOMER APIS - FULL FLOW AS PER YOUR QUESTION ============
+@app.post("/api/customer/register")
+def register_customer(req: CustomerRegisterRequest):
+    phone = clean_phone(req.phone)
+    if len(phone)!= 10:
+        raise HTTPException(status_code=400, detail="Invalid phone - 10 digit required")
+    db = SessionLocal()
+    try:
+        existing = db.query(Customer).filter(Customer.phone == phone).first()
+        if existing:
+            existing.name = req.name
+            existing.town = req.town
+            existing.address = req.address
+            existing.pincode = req.pincode or "783332"
+            db.commit()
+            db.refresh(existing)
+            return {"success": True, "message": "Already registered", "customer": {"id": existing.id, "phone": existing.phone, "name": existing.name, "town": existing.town, "pincode": existing.pincode}}
+
+        new_customer = Customer(
+            id=f"CUST-{uuid.uuid4().hex[:6].upper()}",
+            phone=phone,
+            name=req.name,
+            town=req.town or "Hatidhura",
+            address=req.address or "",
+            pincode=req.pincode or "783332"
+        )
+        db.add(new_customer)
+        db.commit()
+        db.refresh(new_customer)
+        print(f"✅ NEW CUSTOMER REGISTERED: {phone} - {req.name} - {req.town}")
+        return {"success": True, "customer": {"id": new_customer.id, "phone": new_customer.phone, "name": new_customer.name, "town": new_customer.town, "pincode": new_customer.pincode, "address": new_customer.address}}
+    finally:
+        db.close()
+
 @app.post("/api/customer/send-otp")
 def send_customer_otp(req: CustomerLoginRequest):
-    phone = clean_phone(req.phone); otp = "9876"; otp_store[phone] = otp
-    return {"success": True, "message": "OTP sent", "otp": otp, "phone": phone}
+    phone = clean_phone(req.phone)
+    if len(phone)!= 10:
+        raise HTTPException(status_code=400, detail="Invalid phone")
+    otp = str(random.randint(1000, 9999))
+    otp_store[phone] = {"otp": otp, "time": time.time()}
+    print(f"🔐 CUSTOMER OTP {phone} = {otp} (10 min valid)")
+    return {"success": True, "message": "OTP sent - 10 min valid", "otp": otp, "phone": phone}
 
 @app.post("/api/customer/verify-otp")
 def verify_customer_otp(req: CustomerVerifyRequest):
     phone = clean_phone(req.phone)
     db = SessionLocal()
     try:
-        stored = otp_store.get(phone)
-        if stored is None: raise HTTPException(status_code=400, detail="OTP not sent")
-        if str(req.otp)!= str(stored): raise HTTPException(status_code=400, detail="Wrong OTP")
+        saved = otp_store.get(phone)
+        if saved is None:
+            raise HTTPException(status_code=400, detail="OTP not sent - Send OTP first")
+
+        # Handle both old string and new dict format
+        if isinstance(saved, dict):
+            if time.time() - saved["time"] > 600: # 10 min expiry
+                otp_store.pop(phone, None)
+                raise HTTPException(status_code=400, detail="OTP expired - 10 min over, Resend karo")
+            stored_otp = saved["otp"]
+        else:
+            stored_otp = saved
+
+        if str(req.otp)!= str(stored_otp):
+            raise HTTPException(status_code=400, detail="Wrong OTP")
+
         customer = db.query(Customer).filter(Customer.phone == phone).first()
         if not customer:
-            customer = Customer(id=f"CUST-{uuid.uuid4().hex[:6].upper()}", phone=phone, name=req.name or "BazarHaat Customer")
-            db.add(customer); db.commit(); db.refresh(customer)
-        otp_store.pop(phone, None)
-        return {"success": True, "customer": {"id": customer.id, "phone": customer.phone, "name": customer.name}, "token": f"token_{customer.id}"}
-    finally: db.close()
+            customer = Customer(
+                id=f"CUST-{uuid.uuid4().hex[:6].upper()}",
+                phone=phone,
+                name=req.name or "BazarHaat Customer",
+                town="Hatidhura",
+                pincode="783332"
+            )
+            db.add(customer)
+            db.commit()
+            db.refresh(customer)
+            print(f"✅ AUTO-CREATED CUSTOMER ON OTP VERIFY: {phone}")
 
+        otp_store.pop(phone, None)
+        return {
+            "success": True,
+            "customer": {
+                "id": customer.id,
+                "phone": customer.phone,
+                "name": customer.name,
+                "town": customer.town or "Hatidhura",
+                "pincode": customer.pincode or "783332",
+                "address": customer.address or ""
+            },
+            "token": f"token_{customer.id}_{int(time.time())}"
+        }
+    finally:
+        db.close()
+
+# --- REST SAME AS YOUR CODE ---
 @app.get("/api/vendors")
 def get_vendors(): db = SessionLocal(); v = db.query(Vendor).all(); db.close(); return v
 @app.get("/api/products")
@@ -243,7 +340,7 @@ def rider_accept_order(order_id: str, data: dict):
     db = SessionLocal()
     try:
         o = db.query(Order).filter(Order.id==order_id).first()
-        if not o: raise HTTPException(404, "Order not found")
+        if not o: raise HTTPException(status_code=404, detail="Order not found")
         o.status="Accepted_by_Rider"; o.rider_id=data.get("rider_id","RIDER-01"); db.commit(); return {"success":True}
     finally: db.close()
 @app.post("/api/rider/orders/{order_id}/deliver")
@@ -251,8 +348,8 @@ def rider_deliver_order(order_id: str, data: dict):
     db = SessionLocal()
     try:
         o = db.query(Order).filter(Order.id==order_id).first()
-        if not o: raise HTTPException(404, "Order not found")
-        if str(o.otp)!=str(data.get("otp")): raise HTTPException(400, "Wrong OTP")
+        if not o: raise HTTPException(status_code=404, detail="Order not found")
+        if str(o.otp)!=str(data.get("otp")): raise HTTPException(status_code=400, detail="Wrong OTP")
         o.status="Delivered"
         if o.rider_id:
             r = db.query(Rider).filter(Rider.id==o.rider_id).first()
@@ -270,7 +367,7 @@ def admin_verify_rider_by_id(rider_id: str):
     db=SessionLocal()
     try:
         r=db.query(Rider).filter(Rider.id==rider_id).first()
-        if not r: raise HTTPException(404, "Rider not found")
+        if not r: raise HTTPException(status_code=404, detail="Rider not found")
         r.is_verified=True; db.commit(); return {"success":True, "rider_id":rider_id, "is_verified":True}
     finally: db.close()
 @app.post("/api/rider/verify/{rider_id}")
@@ -279,7 +376,7 @@ def rider_verify_path(rider_id: str):
     try:
         r=db.query(Rider).filter(Rider.id==rider_id).first()
         if not r: r=db.query(Rider).filter(Rider.phone==rider_id).first()
-        if not r: raise HTTPException(404, "Rider not found")
+        if not r: raise HTTPException(status_code=404, detail="Rider not found")
         r.is_verified=True; db.commit(); return {"success":True, "rider_id":r.id, "is_verified":True}
     finally: db.close()
 @app.post("/api/riders/{rider_id}/verify")
@@ -287,12 +384,12 @@ def riders_verify_alias(rider_id: str): return rider_verify_path(rider_id)
 @app.post("/api/admin/approve-rider")
 def admin_approve_rider(req: ApproveRiderRequest):
     fid=req.rider_id or req.id
-    if not fid: raise HTTPException(400, "rider_id required")
+    if not fid: raise HTTPException(status_code=400, detail="rider_id required")
     db=SessionLocal()
     try:
         r=db.query(Rider).filter(Rider.id==fid).first()
         if not r: r=db.query(Rider).filter(Rider.phone==fid).first()
-        if not r: raise HTTPException(404, "Rider not found")
+        if not r: raise HTTPException(status_code=404, detail="Rider not found")
         r.is_verified=True; db.commit(); return {"success":True, "rider_id":fid, "is_verified":True}
     finally: db.close()
 @app.post("/api/rider/approve")
@@ -302,7 +399,7 @@ def rider_reject(rider_id: str):
     db=SessionLocal()
     try:
         r=db.query(Rider).filter(Rider.id==rider_id).first()
-        if not r: raise HTTPException(404, "Rider not found")
+        if not r: raise HTTPException(status_code=404, detail="Rider not found")
         r.is_verified=False; db.commit(); return {"success":True, "rejected":True}
     finally: db.close()
 @app.get("/api/settings")

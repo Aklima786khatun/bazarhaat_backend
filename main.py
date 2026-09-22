@@ -426,6 +426,54 @@ async def register_rider(rider_id: str = Form(...), name: str = Form(...), phone
         db.commit(); db.refresh(rider)
         return {"status":"success", "profile":{"rider_id":rider.id, "name":rider.name, "phone":rider.phone, "bike_number":rider.bike_number, "is_verified":rider.is_verified}}
     finally: db.close()
+# ============= VENDOR ADD PRODUCT =============
+@app.post("/api/vendor/products")
+async def vendor_add_product(
+    vendor_id: str = Form(...),
+    name: str = Form(...),
+    price: float = Form(...),
+    original_price: float = Form(0),
+    discount: float = Form(0),
+    stock: int = Form(100),
+    category: str = Form("General"),
+    offer_text: str = Form(""),
+    image: UploadFile = File(None)
+):
+    db = SessionLocal()
+    try:
+        image_url = ""
+        if image and image.filename:
+            filename = f"{uuid.uuid4().hex[:8]}_{image.filename}"
+            path = f"uploads/products/{filename}"
+            os.makedirs("uploads/products", exist_ok=True)
+            with open(path, "wb") as buffer:
+                shutil.copyfileobj(image.file, buffer)
+            image_url = f"/{path}"
+            print(f"📸 Product image saved: {path}")
+        else:
+            image_url = f"https://images.unsplash.com/photo-1542838132-92c53300491e?w=200"
 
+        new_product = Product(
+            name=name,
+            price=price,
+            original_price=original_price,
+            discount=discount,
+            offer_text=offer_text or f"{int(discount)}% OFF" if discount else "",
+            stock=stock,
+            image=image_url,
+            category=category,
+            vendor_id=vendor_id
+        )
+        db.add(new_product)
+        db.commit()
+        db.refresh(new_product)
+        print(f"✅ PRODUCT ADDED: {name} - ₹{price} - {category} - {vendor_id}")
+        return {"success": True, "product_id": new_product.id, "message": "Product Added", "product": {"id": new_product.id, "name": new_product.name}}
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Add product error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 if __name__=="__main__": uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

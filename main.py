@@ -76,6 +76,18 @@ class Payout(Base):
     id = Column(String, primary_key=True); rider_id = Column(String); amount = Column(Float); method = Column(String)
     upi_id = Column(String, nullable=True); bank_account = Column(String, nullable=True); ifsc = Column(String, nullable=True)
     status = Column(String, default="Processing"); created_at = Column(DateTime, default=datetime.now)
+# ============= LIVE LOCATION TABLE - YAHAN ADD KARO =============
+class RiderLocation(Base):
+    __tablename__ = "rider_locations"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    order_id = Column(String, index=True)
+    rider_id = Column(String, index=True)
+    lat = Column(Float)
+    lng = Column(Float)
+    updated_at = Column(DateTime, default=datetime.now)
+# ============= END LOCATION TABLE =============
+
+
 class Customer(Base):
     __tablename__ = "customers"
     id = Column(String, primary_key=True)
@@ -96,6 +108,7 @@ except Exception as e: print(f"❌ DB Error: {e}")
 
 try:
     with engine.connect() as conn:
+        # 1. ALTER wale
         stmts = [
             "ALTER TABLE riders ADD COLUMN bike_number VARCHAR DEFAULT ''",
             "ALTER TABLE riders ADD COLUMN user_type VARCHAR DEFAULT 'RIDER'",
@@ -116,15 +129,48 @@ try:
         ]
         for s in stmts:
             pg = s.replace("ADD COLUMN", "ADD COLUMN IF NOT EXISTS") if "sqlite" not in DATABASE_URL else s
-            try: conn.execute(text(pg))
-            except: pass
+            try: 
+                conn.execute(text(pg))
+            except Exception as ex:
+                print(f"Migration skip: {pg} -> {ex}")
+        
+        # 2. CREATE TABLE alag se - 100% safe
+        try:
+            if "sqlite" not in DATABASE_URL:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS rider_locations (
+                        id SERIAL PRIMARY KEY, 
+                        order_id VARCHAR, 
+                        rider_id VARCHAR, 
+                        lat FLOAT, 
+                        lng FLOAT, 
+                        updated_at TIMESTAMP DEFAULT NOW()
+                    )
+                """))
+            else:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS rider_locations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                        order_id VARCHAR, 
+                        rider_id VARCHAR, 
+                        lat FLOAT, 
+                        lng FLOAT, 
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+            print("✅ rider_locations table OK")
+        except Exception as ex:
+            print(f"rider_locations create skip: {ex}")
+
         conn.commit()
         print("✅ Migration OK")
-except Exception as e: print(f"Migration Note: {e}")
+except Exception as e: 
+    print(f"Migration Note: {e}")
 
 app = FastAPI(title="BazarHaat Backend v4 Final", version="4.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
-os.makedirs("uploads/riders", exist_ok=True); os.makedirs("uploads/products", exist_ok=True)
+os.makedirs("uploads/riders", exist_ok=True)
+os.makedirs("uploads/products", exist_ok=True)
 
 def init_data():
     db = SessionLocal()
@@ -219,9 +265,23 @@ def get_rider_profile(rider_id: str):
         if not rider: rider = db.query(Rider).filter(Rider.phone == clean).first()
         if not rider: rider = db.query(Rider).filter(Rider.phone == rider_id).first()
         if not rider: return {"not_found": True, "is_verified": False}
-        return {"rider_id": rider.id, "phone": rider.phone, "name": rider.name, "bike_number": rider.bike_number, "is_verified": rider.is_verified, "earning": rider.earning}
+        
+        # Full earning data
+        return {
+            "rider_id": rider.id, 
+            "phone": rider.phone, 
+            "name": rider.name, 
+            "bike_number": rider.bike_number, 
+            "is_verified": rider.is_verified, 
+            "earning": float(rider.earning or 0),  # <--- YE IMPORTANT
+            "total_deliveries": int(rider.total_deliveries or 0),
+            "rating": float(rider.rating or 4.8),
+            "vehicle": rider.vehicle or "",
+            "upi": rider.upi or "",
+            "bank_account": rider.bank_account or "",
+            "ifsc": rider.ifsc or ""
+        }
     finally: db.close()
-
 # --- CUSTOMER APIS - FINAL COMBINED ---
 @app.post("/api/customer/register")
 def register_customer(req: CustomerRegisterRequest):
@@ -291,7 +351,37 @@ def customer_place_order(req: PlaceOrderRequest):
         print(f"🛒 NEW ORDER {order_id} - {customer.name} - ₹{total} - OTP {otp} - VENDOR WILL VIBRATE NOW")
         return {"success": True, "id": order_id, "order_id": order_id, "otp": otp, "total": total, "message": "Order Placed - Vendor notified"}
     finally: db.close()
+class OrderItemRequest(BaseModel):
+    vendor_id: Optional[str] = "VENDOR-01"
+    customerName: Optional[str] = "User"
+    customerPhone: Optional[str] = ""
+    total: Optional[float] = 0
+    items: Optional[List[dict]] = []
+    address: Optional[str] = ""
+    status: Optional[str] = "New"
+    otp: Optional[str] = None
+    phone: Optional[str] = ""
 
+@app.post("/api/orders")
+def place_order_generic(req: OrderItemRequest):
+    db = SessionLocal()
+    try:
+        phone = clean_phone(req.customerPhone or req.phone or "9876543210")
+        order_id = f"BH-{random.randint(100,999)}-{uuid.uuid4().hex[:3].upper()}"
+        otp = str(req.otp) if req.otp else str(random.randint(1000,9999))
+        total = req.total or 0
+        if total == 0 and req.items:
+            total = sum([float(i.get('price',0)) * int(i.get('qty',1) if 'qty' in i else 1) for i in req.items])
+        vendor_id = req.vendor_id or "VENDOR-01"
+        new_order = Order(id=order_id, otp=otp, store_qr=f"STORE-{order_id}", amount=total, customer=req.customerName, customer_phone=phone, phone=phone, address=req.address, status="New", earning=45, vendor_id=vendor_id)
+        db.add(new_order); db.commit()
+        print(f"🛒 NEW ORDER via /api/orders {order_id} - {req.customerName} - ₹{total} - Vendor: {vendor_id} - OTP {otp}")
+        return {"success": True, "id": order_id, "order_id": order_id, "otp": otp, "total": total}
+    except Exception as e:
+        db.rollback()
+        print(f"❌ /api/orders Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally: db.close()
 @app.get("/api/customer/orders/{phone}")
 def get_customer_orders(phone: str):
     clean = clean_phone(phone)
@@ -300,7 +390,36 @@ def get_customer_orders(phone: str):
         orders = db.query(Order).filter(Order.customer_phone == clean).order_by(Order.created_at.desc()).all()
         return [{"id": o.id, "otp": o.otp, "total": o.amount, "status": o.status, "date": o.created_at.isoformat() if o.created_at else "", "count": 1} for o in orders]
     finally: db.close()
+@app.post("/api/rider/location")
+def update_rider_location(data: dict):
+    db = SessionLocal()
+    try:
+        order_id = str(data.get("orderId") or data.get("order_id") or "")
+        rider_id = str(data.get("rider_id") or "")
+        lat = float(data.get("lat") or 0)
+        lng = float(data.get("lng") or 0)
+        if not order_id:
+            raise HTTPException(status_code=400, detail="orderId required")
+        db.query(RiderLocation).filter(RiderLocation.order_id == order_id).delete()
+        new_loc = RiderLocation(order_id=order_id, rider_id=rider_id, lat=lat, lng=lng)
+        db.add(new_loc)
+        db.commit()
+        print(f"📍 LIVE {order_id} - {rider_id} => {lat},{lng}")
+        return {"success": True, "orderId": order_id, "lat": lat, "lng": lng}
+    finally:
+        db.close()
 
+@app.get("/api/rider/location/{order_id}")
+def get_rider_location(order_id: str):
+    db = SessionLocal()
+    try:
+        loc = db.query(RiderLocation).filter(RiderLocation.order_id == order_id).order_by(RiderLocation.updated_at.desc()).first()
+        if not loc:
+            return {"found": False, "order_id": order_id}
+        return {"found": True, "order_id": loc.order_id, "rider_id": loc.rider_id, "lat": loc.lat, "lng": loc.lng, "updated_at": loc.updated_at.isoformat() if loc.updated_at else ""}
+    finally:
+        db.close()
+# ============= END LIVE API =============
 # --- VENDOR & OTHER APIS ---
 @app.get("/api/vendors")
 def get_vendors(): db=SessionLocal(); v=db.query(Vendor).all(); db.close(); return v
@@ -323,6 +442,36 @@ def vendor_stats(vendor_id: str):
         orders=db.query(Order).filter(Order.vendor_id==vendor_id).all()
         return {"product_count":pc, "total_orders":len(orders), "new_orders":len([o for o in orders if o.status=="New"]), "vendor_id":vendor_id, "earnings": sum([o.amount for o in orders if o.status=="Delivered"]) if orders else 0}
     finally: db.close()
+@app.post("/api/vendor/orders/{order_id}/accept")
+def vendor_accept_order(order_id: str):
+    db = SessionLocal()
+    try:
+        o = db.query(Order).filter(Order.id == order_id).first()
+        if not o:
+            raise HTTPException(status_code=404, detail="Order not found")
+        o.status = "Accepted_by_Vendor"
+        db.commit()
+        print(f"✅ Vendor Accepted {order_id}")
+        return {"success": True, "order_id": order_id, "status": "Accepted_by_Vendor"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.post("/api/vendor/orders/{order_id}/reject")
+def vendor_reject_order(order_id: str):
+    db = SessionLocal()
+    try:
+        o = db.query(Order).filter(Order.id == order_id).first()
+        if not o:
+            raise HTTPException(status_code=404, detail="Order not found")
+        o.status = "Rejected_by_Vendor"
+        db.commit()
+        return {"success": True}
+    finally:
+        db.close()
+
 @app.get("/api/rider/orders")
 def get_rider_available_orders(): db=SessionLocal(); o=db.query(Order).filter(Order.status.in_(["New","Accepted_by_Vendor","Assigned","Picked Up","Accepted_by_Rider"])).all(); db.close(); return o
 @app.post("/api/rider/orders/{order_id}/accept")
@@ -343,8 +492,12 @@ def rider_deliver_order(order_id: str, data: dict):
         o.status="Delivered"
         if o.rider_id:
             r=db.query(Rider).filter(Rider.id==o.rider_id).first()
-            if r: r.earning+=o.earning
-        db.commit(); return {"success":True}
+            if r: 
+                r.earning = (r.earning or 0) + (o.earning or 45)
+                r.total_deliveries = (r.total_deliveries or 0) + 1
+        db.commit(); 
+        print(f"✅ Delivered {order_id} - Rider earning +{o.earning}")
+        return {"success":True}
     finally: db.close()
 @app.get("/api/riders")
 def get_all_riders_alias(): db=SessionLocal(); r=db.query(Rider).all(); db.close(); return r

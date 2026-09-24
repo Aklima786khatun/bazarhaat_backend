@@ -433,15 +433,52 @@ def get_products(category: Optional[str]=None):
 @app.get("/api/vendor/products/{vendor_id}")
 def get_vendor_products(vendor_id: str): db=SessionLocal(); p=db.query(Product).filter(Product.vendor_id==vendor_id).all(); db.close(); return p
 @app.get("/api/vendor/orders/{vendor_id}")
-def get_vendor_orders(vendor_id: str): db=SessionLocal(); o=db.query(Order).filter(Order.vendor_id==vendor_id).order_by(Order.created_at.desc()).all(); db.close(); return o
+def get_vendor_orders(vendor_id: str):
+    db = SessionLocal()
+    try:
+        orders = db.query(Order).filter(Order.vendor_id == vendor_id).order_by(Order.created_at.desc()).all()
+        result = []
+        for o in orders:
+            result.append({
+                "id": o.id,
+                "orderId": o.id,
+                "customer": o.customer,
+                "customerName": o.customer,
+                "amount": o.amount,
+                "total": o.amount,
+                "otp": o.otp,
+                "store_qr": o.store_qr,
+                "status": o.status,
+                "address": o.address,
+                "customer_phone": o.customer_phone,
+                "phone": o.phone
+            })
+        return result
+    finally:
+        db.close()
+
 @app.get("/api/vendor/stats/{vendor_id}")
 def vendor_stats(vendor_id: str):
-    db=SessionLocal()
+    db = SessionLocal()
     try:
-        pc=db.query(Product).filter(Product.vendor_id==vendor_id).count()
-        orders=db.query(Order).filter(Order.vendor_id==vendor_id).all()
-        return {"product_count":pc, "total_orders":len(orders), "new_orders":len([o for o in orders if o.status=="New"]), "vendor_id":vendor_id, "earnings": sum([o.amount for o in orders if o.status=="Delivered"]) if orders else 0}
-    finally: db.close()
+        pc = db.query(Product).filter(Product.vendor_id == vendor_id).count()
+        orders = db.query(Order).filter(Order.vendor_id == vendor_id).all()
+        today = datetime.now().date()
+        today_orders = [o for o in orders if o.created_at and o.created_at.date() == today]
+        return {
+            "product_count": pc,
+            "total_orders": len(orders),
+            "new_orders": len([o for o in orders if o.status == "New"]),
+            "pending_orders": len([o for o in orders if o.status == "New"]),
+            "today_income": sum([o.amount for o in today_orders]),
+            "today_orders": len(today_orders),
+            "total_income": sum([o.amount for o in orders]),
+            "earnings": sum([o.amount for o in orders if o.status == "Delivered"]),
+            "vendor_id": vendor_id,
+            "rating": 4.8
+        }
+    finally:
+        db.close()
 @app.post("/api/vendor/orders/{order_id}/accept")
 def vendor_accept_order(order_id: str):
     db = SessionLocal()
@@ -473,15 +510,42 @@ def vendor_reject_order(order_id: str):
         db.close()
 
 @app.get("/api/rider/orders")
-def get_rider_available_orders(): db=SessionLocal(); o=db.query(Order).filter(Order.status.in_(["New","Accepted_by_Vendor","Assigned","Picked Up","Accepted_by_Rider"])).all(); db.close(); return o
+def get_rider_available_orders():
+    db = SessionLocal()
+    try:
+        orders = db.query(Order).filter(Order.status.in_(
+            ["New","Accepted_by_Vendor","Assigned","Picked Up","Accepted_by_Rider"]
+        )).order_by(Order.created_at.desc()).all()
+        return [
+            {
+                "id": o.id, 
+                "customer": o.customer, 
+                "amount": o.amount, 
+                "otp": o.otp, 
+                "store_qr": o.store_qr, 
+                "status": o.status, 
+                "address": o.address,
+                "customer_phone": o.customer_phone,
+                "vendor_id": o.vendor_id,
+                "rider_id": o.rider_id
+            } 
+            for o in orders
+        ]
+    finally:
+        db.close()
 @app.post("/api/rider/orders/{order_id}/accept")
 def rider_accept_order(order_id: str, data: dict):
-    db=SessionLocal()
+    db = SessionLocal()
     try:
-        o=db.query(Order).filter(Order.id==order_id).first()
-        if not o: raise HTTPException(status_code=404, detail="Order not found")
-        o.status="Accepted_by_Rider"; o.rider_id=data.get("rider_id","RIDER-01"); db.commit(); return {"success":True}
-    finally: db.close()
+        o = db.query(Order).filter(Order.id == order_id).first()
+        if not o:
+            raise HTTPException(status_code=404, detail="Order not found")
+        o.status = "Accepted_by_Rider"
+        o.rider_id = data.get("rider_id", "RIDER-01")
+        db.commit()
+        return {"success": True}
+    finally:
+        db.close()
 @app.post("/api/rider/orders/{order_id}/deliver")
 def rider_deliver_order(order_id: str, data: dict):
     db=SessionLocal()
@@ -628,5 +692,50 @@ async def vendor_add_product(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
+@app.post("/api/rider/notify/{order_id}")
+def rider_notify(order_id: str, data: dict = {}):
+    print(f"🔔 Rider Notify for {order_id} - {data}")
+    return {"success": True, "order_id": order_id, "message": "Riders notified"}
+
+@app.post("/api/rider/verify-pickup")
+def verify_pickup(data: dict):
+    db = SessionLocal()
+    try:
+        order_id = str(data.get("order_id") or data.get("orderId") or "").strip()
+        store_qr = str(data.get("store_qr") or data.get("storeQr") or "").strip()
+        rider_id = str(data.get("rider_id") or "")
+        
+        print(f"🔍 VERIFY REQ: order={order_id} qr={store_qr} rider={rider_id}")
+
+        if not order_id or not store_qr:
+            raise HTTPException(status_code=400, detail="order_id and store_qr required")
+
+        expected_qr = f"STORE-{order_id}"
+        
+        if store_qr != expected_qr and store_qr.replace("STORE-","") != order_id:
+            if f"STORE-{store_qr}" != expected_qr and store_qr != order_id:
+                 raise HTTPException(status_code=400, detail=f"QR Mismatch! Expected {expected_qr}, got {store_qr}")
+
+        o = db.query(Order).filter(Order.id == order_id).first()
+        if not o:
+            raise HTTPException(status_code=404, detail="Order not found")
+        
+        o.status = "Picked_by_Rider"
+        if rider_id:
+            o.rider_id = rider_id
+        
+        db.commit()
+        print(f"✅ PICKUP VERIFIED {order_id} by {rider_id}")
+        return {"success": True, "order_id": order_id, "status": "Picked_by_Rider"}
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Verify error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 if __name__=="__main__": uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

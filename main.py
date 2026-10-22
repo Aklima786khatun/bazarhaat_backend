@@ -466,9 +466,12 @@ def get_products(category: Optional[str]=None):
 def get_vendor_products(vendor_id: str): db=SessionLocal(); p=db.query(Product).filter(Product.vendor_id==vendor_id).all(); db.close(); return p
 @app.get("/api/vendor/orders/{vendor_id}")
 def get_vendor_orders(vendor_id: str):
+    vendor_id = vendor_id.strip()  # SPACE FIX
     db = SessionLocal()
     try:
+        print(f"📦 FETCH VENDOR ORDERS: '{vendor_id}'")
         orders = db.query(Order).filter(Order.vendor_id == vendor_id).order_by(Order.created_at.desc()).all()
+        print(f"✅ Found {len(orders)} orders for {vendor_id}")
         result = []
         for o in orders:
             result.append({
@@ -483,14 +486,15 @@ def get_vendor_orders(vendor_id: str):
                 "status": o.status,
                 "address": o.address,
                 "customer_phone": o.customer_phone,
-                "phone": o.phone
+                "phone": o.phone,
+                "created_at": o.created_at.isoformat() if o.created_at else ""
             })
         return result
     finally:
         db.close()
-
 @app.get("/api/vendor/stats/{vendor_id}")
 def vendor_stats(vendor_id: str):
+    vendor_id = vendor_id.strip()
     db = SessionLocal()
     try:
         pc = db.query(Product).filter(Product.vendor_id == vendor_id).count()
@@ -511,8 +515,10 @@ def vendor_stats(vendor_id: str):
         }
     finally:
         db.close()
+
 @app.post("/api/vendor/orders/{order_id}/accept")
 def vendor_accept_order(order_id: str):
+    order_id = order_id.strip()
     db = SessionLocal()
     try:
         o = db.query(Order).filter(Order.id == order_id).first()
@@ -524,12 +530,14 @@ def vendor_accept_order(order_id: str):
         return {"success": True, "order_id": order_id, "status": "Accepted_by_Vendor"}
     except Exception as e:
         db.rollback()
+        print(f"❌ Accept error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
 
 @app.post("/api/vendor/orders/{order_id}/reject")
 def vendor_reject_order(order_id: str):
+    order_id = order_id.strip()
     db = SessionLocal()
     try:
         o = db.query(Order).filter(Order.id == order_id).first()
@@ -537,10 +545,10 @@ def vendor_reject_order(order_id: str):
             raise HTTPException(status_code=404, detail="Order not found")
         o.status = "Rejected_by_Vendor"
         db.commit()
+        print(f"❌ Vendor Rejected {order_id}")
         return {"success": True}
     finally:
         db.close()
-
 @app.get("/api/rider/orders")
 def get_rider_available_orders():
     db = SessionLocal()
@@ -565,6 +573,7 @@ def get_rider_available_orders():
         ]
     finally:
         db.close()
+
 @app.post("/api/rider/orders/{order_id}/accept")
 def rider_accept_order(order_id: str, data: dict):
     db = SessionLocal()

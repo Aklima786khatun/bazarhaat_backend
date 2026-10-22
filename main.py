@@ -183,18 +183,40 @@ UPLOAD_RIDERS = os.path.join(UPLOAD_BASE, "riders")
 UPLOAD_PRODUCTS = os.path.join(UPLOAD_BASE, "products")
 
 def init_data():
+    # VERCEL PE SEED SKIP - DEADLOCK FIX
+    if os.getenv("VERCEL") or os.getenv("VERCEL_ENV"):
+        print("⏭️ Skipping seed on Vercel - DB already seeded")
+        return
+    
     db = SessionLocal()
     try:
         if db.query(Vendor).count() == 0:
-            db.add_all([Vendor(id="VENDOR-01", name="Goreswar Kirana", owner="Bikash", phone="9876543211", address="Goreswar Market", city="Goreswar", orders=42, isOnline=True, isActive=True),Vendor(id="VENDOR-02", name="Maa Store Pathsala", owner="Ramesh", phone="9876543212", address="Pathsala Market", city="Pathsala", orders=18, isOnline=True, isActive=True),]); db.commit()
+            db.add_all([
+                Vendor(id="VENDOR-01", name="Goreswar Kirana", owner="Bikash", phone="9876543211", address="Goreswar Market", city="Goreswar", orders=42, isOnline=True, isActive=True),
+                Vendor(id="VENDOR-02", name="Maa Store Pathsala", owner="Ramesh", phone="9876543212", address="Pathsala Market", city="Pathsala", orders=18, isOnline=True, isActive=True),
+            ])
+            db.commit()
         if db.query(Product).count() == 0:
-            db.add_all([Product(name="Fresh Tomato 1kg", price=40, original_price=50, discount=20, offer_text="20% OFF", stock=100, image="https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=200", vendor_id="VENDOR-01", category="Vegetables"),Product(name="Amul Milk 1L", price=65, original_price=70, discount=7, offer_text="7% OFF", stock=50, image="https://images.unsplash.com/photo-1550583724-b2692b85b150?w=200", vendor_id="VENDOR-01", category="Dairy"),]); db.commit()
+            db.add_all([
+                Product(name="Fresh Tomato 1kg", price=40, original_price=50, discount=20, offer_text="20% OFF", stock=100, image="https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=200", vendor_id="VENDOR-01", category="Vegetables"),
+                Product(name="Amul Milk 1L", price=65, original_price=70, discount=7, offer_text="7% OFF", stock=50, image="https://images.unsplash.com/photo-1550583724-b2692b85b150?w=200", vendor_id="VENDOR-01", category="Dairy"),
+            ])
+            db.commit()
         if db.query(Rider).count() == 0:
-            db.add(Rider(id="BH-RIDER-01", name="Rahul Rider", phone="9876543210", vehicle="Bike - AS-12-AB-1234", bike_number="AS-12-AB-1234", bank_account="HDFC ****1234", ifsc="HDFC0001234", upi="rahul@upi", rating=4.8, total_deliveries=22, earning=320.0, is_verified=True)); db.commit()
+            db.add(Rider(id="BH-RIDER-01", name="Rahul Rider", phone="9876543210", vehicle="Bike - AS-12-AB-1234", bike_number="AS-12-AB-1234", bank_account="HDFC ****1234", ifsc="HDFC0001234", upi="rahul@upi", rating=4.8, total_deliveries=22, earning=320.0, is_verified=True))
+            db.commit()
         if db.query(Order).count() == 0:
-            db.add_all([Order(id="BH-102", otp="1234", store_qr="STORE-BH-102", amount=250, customer="Rahul Das", customer_phone="9876543210", phone="9876543210", address="Near College, Goreswar, 2.3km", status="New", earning=45, vendor_id="VENDOR-01"),Order(id="BH-103", otp="5678", store_qr="STORE-BH-103", amount=450, customer="Ankit Sharma", customer_phone="9876543211", phone="9876543211", address="Main Market, Baihata", status="New", earning=60, vendor_id="VENDOR-01"),]); db.commit()
-    except Exception as e: print(f"Seed error: {e}"); db.rollback()
-    finally: db.close()
+            db.add_all([
+                Order(id="BH-102", otp="1234", store_qr="STORE-BH-102", amount=250, customer="Rahul Das", customer_phone="9876543210", phone="9876543210", address="Near College, Goreswar, 2.3km", status="New", earning=45, vendor_id="VENDOR-01"),
+                Order(id="BH-103", otp="5678", store_qr="STORE-BH-103", amount=450, customer="Ankit Sharma", customer_phone="9876543211", phone="9876543211", address="Main Market, Baihata", status="New", earning=60, vendor_id="VENDOR-01"),
+            ])
+            db.commit()
+    except Exception as e: 
+        print(f"Seed error: {e}")
+        db.rollback()
+    finally: 
+        db.close()
+
 init_data()
 
 class RiderOtpRequest(BaseModel): phone: str
@@ -686,9 +708,17 @@ async def vendor_add_product(
 ):
     db = SessionLocal()
     try:
+        # SPACE FIX - Aapke curl me " VENDOR-01" tha
+        vendor_id = vendor_id.strip()
+        name = name.strip()
+        category = category.strip()
+        offer_text = offer_text.strip()
+
         image_url = ""
         if image and image.filename:
-            filename = f"{uuid.uuid4().hex[:8]}_{image.filename}"
+            # Safe filename
+            safe_name = image.filename.replace(" ", "_")
+            filename = f"{uuid.uuid4().hex[:8]}_{safe_name}"
             path = os.path.join(UPLOAD_PRODUCTS, filename)
             os.makedirs(UPLOAD_PRODUCTS, exist_ok=True)
             with open(path, "wb") as buffer:
@@ -703,7 +733,7 @@ async def vendor_add_product(
             price=price,
             original_price=original_price,
             discount=discount,
-            offer_text=offer_text or f"{int(discount)}% OFF" if discount else "",
+            offer_text=offer_text or (f"{int(discount)}% OFF" if discount else ""),
             stock=stock,
             image=image_url,
             category=category,

@@ -42,6 +42,11 @@ else:
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
 
+# ====== FASTAPI APP - YE MISSING HAI ======
+app = FastAPI(title="BazarHaat Backend v4 Final", version="4.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+# ====== END FASTAPI APP ======
+
 def clean_phone(p: str) -> str:
     if not p: return ""
     p = p.replace("+91","").replace(" ","").replace("-","").strip()
@@ -167,10 +172,17 @@ try:
 except Exception as e: 
     print(f"Migration Note: {e}")
 
-app = FastAPI(title="BazarHaat Backend v4 Final", version="4.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
-os.makedirs("uploads/riders", exist_ok=True)
-os.makedirs("uploads/products", exist_ok=True)
+import os
+
+# Vercel pe /tmp writable hai, local pe normal folder
+UPLOAD_BASE = "/tmp/uploads" if os.path.exists("/tmp") and os.access("/tmp", os.W_OK) else "uploads"
+
+os.makedirs(os.path.join(UPLOAD_BASE, "riders"), exist_ok=True)
+os.makedirs(os.path.join(UPLOAD_BASE, "products"), exist_ok=True)
+
+# For use in other places
+UPLOAD_RIDERS = os.path.join(UPLOAD_BASE, "riders")
+UPLOAD_PRODUCTS = os.path.join(UPLOAD_BASE, "products")
 
 def init_data():
     db = SessionLocal()
@@ -627,7 +639,7 @@ def request_payout(data: dict):
 async def register_rider(rider_id: str = Form(...), name: str = Form(...), phone: str = Form(...), bike_number: str = Form(...), photo: UploadFile = File(None), rc: UploadFile = File(None), license: UploadFile = File(None), aadhaar: UploadFile = File(None)):
     def save_file(f, prefix):
         if not f or not f.filename: return ""
-        path=f"uploads/riders/{prefix}_{rider_id}_{f.filename}"
+        path=os.path.join(UPLOAD_RIDERS, f"{prefix}_{rider_id}_{f.filename}")
         with open(path, "wb") as buffer: shutil.copyfileobj(f.file, buffer)
         return f"/{path}"
     db=SessionLocal()
@@ -661,8 +673,8 @@ async def vendor_add_product(
         image_url = ""
         if image and image.filename:
             filename = f"{uuid.uuid4().hex[:8]}_{image.filename}"
-            path = f"uploads/products/{filename}"
-            os.makedirs("uploads/products", exist_ok=True)
+            path = os.path.join(UPLOAD_PRODUCTS, filename)
+            os.makedirs(UPLOAD_PRODUCTS, exist_ok=True)
             with open(path, "wb") as buffer:
                 shutil.copyfileobj(image.file, buffer)
             image_url = f"/{path}"
@@ -737,5 +749,5 @@ def verify_pickup(data: dict):
     finally:
         db.close()
 
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+app.mount("/uploads", StaticFiles(directory=UPLOAD_BASE), name="uploads")
 if __name__=="__main__": uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

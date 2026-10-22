@@ -172,8 +172,6 @@ try:
 except Exception as e: 
     print(f"Migration Note: {e}")
 
-import os
-
 # Vercel pe /tmp writable hai, local pe normal folder
 UPLOAD_BASE = "/tmp/uploads" if os.path.exists("/tmp") and os.access("/tmp", os.W_OK) else "uploads"
 
@@ -638,23 +636,41 @@ def request_payout(data: dict):
 @app.post("/api/rider/register")
 async def register_rider(rider_id: str = Form(...), name: str = Form(...), phone: str = Form(...), bike_number: str = Form(...), photo: UploadFile = File(None), rc: UploadFile = File(None), license: UploadFile = File(None), aadhaar: UploadFile = File(None)):
     def save_file(f, prefix):
-        if not f or not f.filename: return ""
-        path=os.path.join(UPLOAD_RIDERS, f"{prefix}_{rider_id}_{f.filename}")
-        with open(path, "wb") as buffer: shutil.copyfileobj(f.file, buffer)
-        return f"/{path}"
-    db=SessionLocal()
+        if not f or not f.filename:
+            return ""
+        fname = f"{prefix}_{rider_id}_{f.filename}"
+        path = os.path.join(UPLOAD_RIDERS, fname)
+        with open(path, "wb") as buffer:
+            shutil.copyfileobj(f.file, buffer)
+        return f"/uploads/riders/{fname}"
+
+    db = SessionLocal()
     try:
-        clean=clean_phone(phone)
-        rider=db.query(Rider).filter(Rider.id==rider_id).first()
-        if not rider: rider=Rider(id=rider_id, name=name, phone=clean, vehicle=bike_number, bike_number=bike_number, earning=0, is_verified=False); db.add(rider)
-        else: rider.name=name; rider.phone=clean; rider.vehicle=bike_number; rider.bike_number=bike_number
-        if photo and photo.filename: rider.photo_url=save_file(photo,"photo")
-        if rc and rc.filename: rider.rc_url=save_file(rc,"rc")
-        if license and license.filename: rider.license_url=save_file(license,"license")
-        if aadhaar and aadhaar.filename: rider.aadhaar_url=save_file(aadhaar,"aadhaar")
-        db.commit(); db.refresh(rider)
-        return {"status":"success", "profile":{"rider_id":rider.id, "name":rider.name, "phone":rider.phone, "bike_number":rider.bike_number, "is_verified":rider.is_verified}}
-    finally: db.close()
+        clean = clean_phone(phone)
+        rider = db.query(Rider).filter(Rider.id == rider_id).first()
+        if not rider:
+            rider = Rider(id=rider_id, name=name, phone=clean, vehicle=bike_number, bike_number=bike_number, earning=0, is_verified=False)
+            db.add(rider)
+        else:
+            rider.name = name
+            rider.phone = clean
+            rider.vehicle = bike_number
+            rider.bike_number = bike_number
+
+        if photo and photo.filename:
+            rider.photo_url = save_file(photo, "photo")
+        if rc and rc.filename:
+            rider.rc_url = save_file(rc, "rc")
+        if license and license.filename:
+            rider.license_url = save_file(license, "license")
+        if aadhaar and aadhaar.filename:
+            rider.aadhaar_url = save_file(aadhaar, "aadhaar")
+
+        db.commit()
+        db.refresh(rider)
+        return {"status": "success", "profile": {"rider_id": rider.id, "name": rider.name, "phone": rider.phone, "bike_number": rider.bike_number, "is_verified": rider.is_verified}}
+    finally:
+        db.close()
 # ============= VENDOR ADD PRODUCT =============
 @app.post("/api/vendor/products")
 async def vendor_add_product(
@@ -677,7 +693,7 @@ async def vendor_add_product(
             os.makedirs(UPLOAD_PRODUCTS, exist_ok=True)
             with open(path, "wb") as buffer:
                 shutil.copyfileobj(image.file, buffer)
-            image_url = f"/{path}"
+            image_url = f"/uploads/products/{filename}"
             print(f"📸 Product image saved: {path}")
         else:
             image_url = f"https://images.unsplash.com/photo-1542838132-92c53300491e?w=200"

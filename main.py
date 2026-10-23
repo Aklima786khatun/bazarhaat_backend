@@ -717,19 +717,19 @@ async def vendor_add_product(
 ):
     db = SessionLocal()
     try:
-        # SPACE FIX - Aapke curl me " VENDOR-01" tha
         vendor_id = vendor_id.strip()
         name = name.strip()
-        category = category.strip()
+        category = category.strip() or "General"
         offer_text = offer_text.strip()
 
+        # Always ensure folder exists - FIX 2
+        os.makedirs(UPLOAD_PRODUCTS, exist_ok=True)
+        
         image_url = ""
-        if image and image.filename:
-            # Safe filename
-            safe_name = image.filename.replace(" ", "_")
+        if image and getattr(image, 'filename', None):
+            safe_name = os.path.basename(image.filename).replace(" ", "_")
             filename = f"{uuid.uuid4().hex[:8]}_{safe_name}"
             path = os.path.join(UPLOAD_PRODUCTS, filename)
-            os.makedirs(UPLOAD_PRODUCTS, exist_ok=True)
             with open(path, "wb") as buffer:
                 shutil.copyfileobj(image.file, buffer)
             image_url = f"/uploads/products/{filename}"
@@ -740,7 +740,7 @@ async def vendor_add_product(
         new_product = Product(
             name=name,
             price=price,
-            original_price=original_price,
+            original_price=original_price or price,
             discount=discount,
             offer_text=offer_text or (f"{int(discount)}% OFF" if discount else ""),
             stock=stock,
@@ -752,9 +752,11 @@ async def vendor_add_product(
         db.commit()
         db.refresh(new_product)
         print(f"✅ PRODUCT ADDED: {name} - ₹{price} - {category} - {vendor_id}")
-        return {"success": True, "product_id": new_product.id, "message": "Product Added", "product": {"id": new_product.id, "name": new_product.name}}
+        return {"success": True, "product_id": new_product.id, "message": "Product Added"}
     except Exception as e:
         db.rollback()
+        import traceback
+        traceback.print_exc() # This will show in Render Logs
         print(f"❌ Add product error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:

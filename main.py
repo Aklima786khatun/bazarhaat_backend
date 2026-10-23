@@ -19,7 +19,16 @@ if not firebase_admin._apps:
     except Exception as e:
         print(f"⚠️ Firebase Admin: {e}")
 # ============= END FIREBASE =============
+# ============= CLOUDINARY =============
+import cloudinary
+import cloudinary.uploader
 
+cloudinary.config(
+  cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME", "dxjexample"), # Render pe env se ayega
+  api_key = os.getenv("CLOUDINARY_API_KEY", "123456"),
+  api_secret = os.getenv("CLOUDINARY_API_SECRET", "abcdef")
+)
+# ============= END CLOUDINARY =============
 DB_PASSWORD = os.getenv("DB_PASSWORD", "Bazarhaat@123")
 DATABASE_URL_ENV = os.getenv("DATABASE_URL")
 if DATABASE_URL_ENV:
@@ -702,7 +711,7 @@ async def register_rider(rider_id: str = Form(...), name: str = Form(...), phone
         return {"status": "success", "profile": {"rider_id": rider.id, "name": rider.name, "phone": rider.phone, "bike_number": rider.bike_number, "is_verified": rider.is_verified}}
     finally:
         db.close()
-# ============= VENDOR ADD PRODUCT - FIXED =============
+# ============= VENDOR ADD PRODUCT - CLOUDINARY FINAL =============
 @app.post("/api/vendor/products")
 @app.post("/vendor/add-product")
 async def vendor_add_product(
@@ -728,7 +737,6 @@ async def vendor_add_product(
         final_category = str(category or "General").strip()
         final_offer = str(offer_text or "").strip()
 
-        # Price - support both sell_price and price
         final_price = price
         if final_price is None:
             final_price = sell_price
@@ -736,26 +744,31 @@ async def vendor_add_product(
             final_price = 0
         final_price = float(final_price)
 
-        # Discount - support both discount and discount_percent
         final_discount = discount or discount_percent or 0
         final_discount = float(final_discount)
 
-        # Image handling - HD fix
-        os.makedirs(UPLOAD_PRODUCTS, exist_ok=True)
-        
+        # ===== CLOUDINARY UPLOAD =====
         upload_file = image or image_file or file
         image_url = ""
         if upload_file and getattr(upload_file, 'filename', None) and upload_file.filename:
-            safe_name = os.path.basename(upload_file.filename).replace(" ", "_")
-            filename = f"{uuid.uuid4().hex[:8]}_{safe_name}"
-            path = os.path.join(UPLOAD_PRODUCTS, filename)
-            with open(path, "wb") as buffer:
-                shutil.copyfileobj(upload_file.file, buffer)
-            image_url = f"/uploads/products/{filename}"
-            print(f"📸 Product image saved: {path} -> {image_url}")
+            try:
+                result = cloudinary.uploader.upload(
+                    upload_file.file, 
+                    folder="bazarhaat_products"
+                )
+                image_url = result.get("secure_url")
+                print(f"📸 Cloudinary URL: {image_url}")
+            except Exception as ce:
+                print(f"❌ Cloudinary error: {ce}")
+                safe_name = os.path.basename(upload_file.filename).replace(" ", "_")
+                filename = f"{uuid.uuid4().hex[:8]}_{safe_name}"
+                path = os.path.join(UPLOAD_PRODUCTS, filename)
+                with open(path, "wb") as buffer:
+                    shutil.copyfileobj(upload_file.file, buffer)
+                image_url = f"/uploads/products/{filename}"
         else:
-            # If no file, use high quality placeholder
             image_url = f"https://images.unsplash.com/photo-1542838132-92c53300491e?w=500"
+        # ===== END CLOUDINARY =====
         
         if not final_offer and final_discount:
             final_offer = f"{int(final_discount)}% OFF"
@@ -774,7 +787,7 @@ async def vendor_add_product(
         db.add(new_product)
         db.commit()
         db.refresh(new_product)
-        print(f"✅ PRODUCT ADDED: {final_name} - ₹{final_price} - {final_category} - {vendor_id} - IMG: {image_url[:60]}")
+        print(f"✅ PRODUCT ADDED: {final_name} - ₹{final_price} - {final_category} - {vendor_id}")
         return {"success": True, "product_id": new_product.id, "message": "Product Added", "image": image_url}
     except Exception as e:
         db.rollback()

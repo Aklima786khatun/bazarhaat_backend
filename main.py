@@ -702,61 +702,84 @@ async def register_rider(rider_id: str = Form(...), name: str = Form(...), phone
         return {"status": "success", "profile": {"rider_id": rider.id, "name": rider.name, "phone": rider.phone, "bike_number": rider.bike_number, "is_verified": rider.is_verified}}
     finally:
         db.close()
-# ============= VENDOR ADD PRODUCT =============
+# ============= VENDOR ADD PRODUCT - FIXED =============
 @app.post("/api/vendor/products")
+@app.post("/vendor/add-product")
 async def vendor_add_product(
-    vendor_id: str = Form(...),
-    name: str = Form(...),
-    price: float = Form(...),
+    vendor_id: str = Form("VENDOR-01"),
+    name: str = Form(None),
+    Product_Name: str = Form(None),
+    price: float = Form(None),
+    sell_price: float = Form(None),
     original_price: float = Form(0),
     discount: float = Form(0),
+    discount_percent: float = Form(0),
     stock: int = Form(100),
     category: str = Form("General"),
     offer_text: str = Form(""),
-    image: UploadFile = File(None)
+    image: UploadFile = File(None),
+    image_file: UploadFile = File(None),
+    file: UploadFile = File(None)
 ):
     db = SessionLocal()
     try:
-        vendor_id = vendor_id.strip()
-        name = name.strip()
-        category = category.strip() or "General"
-        offer_text = offer_text.strip()
+        vendor_id = str(vendor_id or "VENDOR-01").strip()
+        final_name = str(name or Product_Name or "Product").strip()
+        final_category = str(category or "General").strip()
+        final_offer = str(offer_text or "").strip()
 
-        # Always ensure folder exists - FIX 2
+        # Price - support both sell_price and price
+        final_price = price
+        if final_price is None:
+            final_price = sell_price
+        if final_price is None:
+            final_price = 0
+        final_price = float(final_price)
+
+        # Discount - support both discount and discount_percent
+        final_discount = discount or discount_percent or 0
+        final_discount = float(final_discount)
+
+        # Image handling - HD fix
         os.makedirs(UPLOAD_PRODUCTS, exist_ok=True)
         
+        upload_file = image or image_file or file
         image_url = ""
-        if image and getattr(image, 'filename', None):
-            safe_name = os.path.basename(image.filename).replace(" ", "_")
+        if upload_file and getattr(upload_file, 'filename', None) and upload_file.filename:
+            safe_name = os.path.basename(upload_file.filename).replace(" ", "_")
             filename = f"{uuid.uuid4().hex[:8]}_{safe_name}"
             path = os.path.join(UPLOAD_PRODUCTS, filename)
             with open(path, "wb") as buffer:
-                shutil.copyfileobj(image.file, buffer)
+                shutil.copyfileobj(upload_file.file, buffer)
             image_url = f"/uploads/products/{filename}"
-            print(f"📸 Product image saved: {path}")
+            print(f"📸 Product image saved: {path} -> {image_url}")
         else:
-            image_url = f"https://images.unsplash.com/photo-1542838132-92c53300491e?w=200"
+            # If no file, use high quality placeholder
+            image_url = f"https://images.unsplash.com/photo-1542838132-92c53300491e?w=500"
+        
+        if not final_offer and final_discount:
+            final_offer = f"{int(final_discount)}% OFF"
 
         new_product = Product(
-            name=name,
-            price=price,
-            original_price=original_price or price,
-            discount=discount,
-            offer_text=offer_text or (f"{int(discount)}% OFF" if discount else ""),
-            stock=stock,
+            name=final_name,
+            price=final_price,
+            original_price=float(original_price or final_price),
+            discount=final_discount,
+            offer_text=final_offer,
+            stock=int(stock),
             image=image_url,
-            category=category,
+            category=final_category,
             vendor_id=vendor_id
         )
         db.add(new_product)
         db.commit()
         db.refresh(new_product)
-        print(f"✅ PRODUCT ADDED: {name} - ₹{price} - {category} - {vendor_id}")
-        return {"success": True, "product_id": new_product.id, "message": "Product Added"}
+        print(f"✅ PRODUCT ADDED: {final_name} - ₹{final_price} - {final_category} - {vendor_id} - IMG: {image_url[:60]}")
+        return {"success": True, "product_id": new_product.id, "message": "Product Added", "image": image_url}
     except Exception as e:
         db.rollback()
         import traceback
-        traceback.print_exc() # This will show in Render Logs
+        traceback.print_exc()
         print(f"❌ Add product error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:

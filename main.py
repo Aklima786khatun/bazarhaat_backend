@@ -71,6 +71,7 @@ class Product(Base):
     id = Column(Integer, primary_key=True, autoincrement=True); name = Column(String); price = Column(Float)
     original_price = Column(Float, nullable=True); discount = Column(Float, default=0); offer_text = Column(String, default="")
     stock = Column(Integer, default=100); image = Column(Text); category = Column(String, default="General"); vendor_id = Column(String)
+    description = Column(Text, default="")
 class Rider(Base):
     __tablename__ = "riders"
     id = Column(String, primary_key=True); name = Column(String, default=""); phone = Column(String, unique=True, index=True)
@@ -138,6 +139,7 @@ try:
             "ALTER TABLE products ADD COLUMN original_price FLOAT DEFAULT 0",
             "ALTER TABLE products ADD COLUMN discount FLOAT DEFAULT 0",
             "ALTER TABLE products ADD COLUMN offer_text VARCHAR DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN description TEXT DEFAULT ''",
             "ALTER TABLE customers ADD COLUMN town VARCHAR DEFAULT 'Hatidhura'",
             "ALTER TABLE customers ADD COLUMN pincode VARCHAR DEFAULT '783332'",
         ]
@@ -726,6 +728,7 @@ async def vendor_add_product(
     stock: int = Form(100),
     category: str = Form("General"),
     offer_text: str = Form(""),
+    description: str = Form(""),
     image: UploadFile = File(None),
     image_file: UploadFile = File(None),
     file: UploadFile = File(None)
@@ -736,6 +739,9 @@ async def vendor_add_product(
         final_name = str(name or Product_Name or "Product").strip()
         final_category = str(category or "General").strip()
         final_offer = str(offer_text or "").strip()
+        final_desc = str(description or "").strip()
+        if not final_desc:
+            final_desc = f"Fresh {final_name} - Premium Quality from BazarHaat"
 
         final_price = price
         if final_price is None:
@@ -747,15 +753,11 @@ async def vendor_add_product(
         final_discount = discount or discount_percent or 0
         final_discount = float(final_discount)
 
-        # ===== CLOUDINARY UPLOAD =====
         upload_file = image or image_file or file
         image_url = ""
         if upload_file and getattr(upload_file, 'filename', None) and upload_file.filename:
             try:
-                result = cloudinary.uploader.upload(
-                    upload_file.file, 
-                    folder="bazarhaat_products"
-                )
+                result = cloudinary.uploader.upload(upload_file.file, folder="bazarhaat_products")
                 image_url = result.get("secure_url")
                 print(f"📸 Cloudinary URL: {image_url}")
             except Exception as ce:
@@ -768,7 +770,6 @@ async def vendor_add_product(
                 image_url = f"/uploads/products/{filename}"
         else:
             image_url = f"https://images.unsplash.com/photo-1542838132-92c53300491e?w=500"
-        # ===== END CLOUDINARY =====
         
         if not final_offer and final_discount:
             final_offer = f"{int(final_discount)}% OFF"
@@ -782,12 +783,13 @@ async def vendor_add_product(
             stock=int(stock),
             image=image_url,
             category=final_category,
-            vendor_id=vendor_id
+            vendor_id=vendor_id,
+            description=final_desc
         )
         db.add(new_product)
         db.commit()
         db.refresh(new_product)
-        print(f"✅ PRODUCT ADDED: {final_name} - ₹{final_price} - {final_category} - {vendor_id}")
+        print(f"✅ PRODUCT ADDED: {final_name} - ₹{final_price} - {final_category} - {vendor_id} - Desc: {final_desc[:50]}")
         return {"success": True, "product_id": new_product.id, "message": "Product Added", "image": image_url}
     except Exception as e:
         db.rollback()

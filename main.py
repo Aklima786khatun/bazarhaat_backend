@@ -535,7 +535,9 @@ def vendor_profile(vendor_id: str):
     finally:
         db.close()
 
+
 @app.post("/api/vendor/approve/{vendor_id}")
+@app.get("/api/vendor/approve/{vendor_id}")
 def vendor_approve(vendor_id: str):
     vendor_id = vendor_id.strip()
     db = SessionLocal()

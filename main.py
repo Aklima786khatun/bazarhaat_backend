@@ -63,9 +63,19 @@ def clean_phone(p: str) -> str:
 
 class Vendor(Base):
     __tablename__ = "vendors"
-    id = Column(String, primary_key=True); name = Column(String); owner = Column(String); phone = Column(String)
-    address = Column(String); city = Column(String); orders = Column(Integer, default=0)
-    isOnline = Column(Boolean, default=True); isActive = Column(Boolean, default=True)
+    id = Column(String, primary_key=True)
+    name = Column(String)
+    owner = Column(String)
+    phone = Column(String)
+    address = Column(String)
+    city = Column(String)
+    orders = Column(Integer, default=0)
+    isOnline = Column(Boolean, default=True)
+    isActive = Column(Boolean, default=True)
+    # --- NEW COLUMNS FOR MULTI-VENDOR ---
+    status = Column(String, default="pending")  # pending / approved / rejected
+    categories = Column(String, default="General")  # Beauty, Groceries etc
+    created_at = Column(DateTime, default=datetime.now)
 class Product(Base):
     __tablename__ = "products"
     id = Column(Integer, primary_key=True, autoincrement=True); name = Column(String); price = Column(Float)
@@ -117,13 +127,7 @@ class Customer(Base):
 otp_store = {}; rider_otp_store = {}
 
 try:
-    Base.metadata.create_all(bind=engine)
-    print("✅ DB Connected")
-except Exception as e: print(f"❌ DB Error: {e}")
-
-try:
     with engine.connect() as conn:
-        # 1. ALTER wale
         stmts = [
             "ALTER TABLE riders ADD COLUMN bike_number VARCHAR DEFAULT ''",
             "ALTER TABLE riders ADD COLUMN user_type VARCHAR DEFAULT 'RIDER'",
@@ -142,6 +146,9 @@ try:
             "ALTER TABLE products ADD COLUMN description TEXT DEFAULT ''",
             "ALTER TABLE customers ADD COLUMN town VARCHAR DEFAULT 'Hatidhura'",
             "ALTER TABLE customers ADD COLUMN pincode VARCHAR DEFAULT '783332'",
+            "ALTER TABLE vendors ADD COLUMN status VARCHAR DEFAULT 'pending'",
+            "ALTER TABLE vendors ADD COLUMN categories VARCHAR DEFAULT 'General'",
+            "ALTER TABLE vendors ADD COLUMN created_at TIMESTAMP DEFAULT NOW()",
         ]
         for s in stmts:
             pg = s.replace("ADD COLUMN", "ADD COLUMN IF NOT EXISTS") if "sqlite" not in DATABASE_URL else s
@@ -192,21 +199,19 @@ os.makedirs(os.path.join(UPLOAD_BASE, "products"), exist_ok=True)
 # For use in other places
 UPLOAD_RIDERS = os.path.join(UPLOAD_BASE, "riders")
 UPLOAD_PRODUCTS = os.path.join(UPLOAD_BASE, "products")
-
 def init_data():
-    # VERCEL PE SEED SKIP - DEADLOCK FIX
     if os.getenv("VERCEL") or os.getenv("VERCEL_ENV"):
         print("⏭️ Skipping seed on Vercel - DB already seeded")
         return
-    
     db = SessionLocal()
     try:
         if db.query(Vendor).count() == 0:
             db.add_all([
-                Vendor(id="VENDOR-01", name="Goreswar Kirana", owner="Bikash", phone="9876543211", address="Goreswar Market", city="Goreswar", orders=42, isOnline=True, isActive=True),
-                Vendor(id="VENDOR-02", name="Maa Store Pathsala", owner="Ramesh", phone="9876543212", address="Pathsala Market", city="Pathsala", orders=18, isOnline=True, isActive=True),
+                Vendor(id="VENDOR-01", name="Goreswar Kirana", owner="Bikash", phone="9876543211", address="Goreswar Market", city="Goreswar", orders=42, isOnline=True, isActive=True, status="approved", categories="Groceries"),
+                Vendor(id="VENDOR-02", name="Maa Store Pathsala", owner="Ramesh", phone="9876543212", address="Pathsala Market", city="Pathsala", orders=18, isOnline=True, isActive=True, status="approved", categories="Vegetables"),
             ])
             db.commit()
+            print("✅ Vendors seeded with approved status")
         if db.query(Product).count() == 0:
             db.add_all([
                 Product(name="Fresh Tomato 1kg", price=40, original_price=50, discount=20, offer_text="20% OFF", stock=100, image="https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=200", vendor_id="VENDOR-01", category="Vegetables"),
@@ -466,6 +471,96 @@ def get_rider_location(order_id: str):
 # --- VENDOR & OTHER APIS ---
 @app.get("/api/vendors")
 def get_vendors(): db=SessionLocal(); v=db.query(Vendor).all(); db.close(); return v
+# ============= VENDOR REGISTRATION - YEHI MISSING THA =============
+class VendorRegisterRequest(BaseModel):
+    name: str
+    owner: Optional[str] = ""
+    phone: str
+    city: str
+    address: Optional[str] = ""
+    categories: Optional[List[str]] = []
+
+@app.post("/api/vendor/register")
+def vendor_register(req: VendorRegisterRequest):
+    db = SessionLocal()
+    try:
+        phone = clean_phone(req.phone)
+        if len(phone) != 10:
+            raise HTTPException(status_code=400, detail="Invalid phone")
+        
+        # Check if already exists
+        existing = db.query(Vendor).filter(Vendor.phone == phone).first()
+        if existing:
+            return {"success": True, "vendorId": existing.id, "status": existing.status, "message": "Already exists"}
+
+        vendor_id = f"VENDOR-{int(time.time())}"
+        new_vendor = Vendor(
+            id=vendor_id,
+            name=req.name,
+            owner=req.owner or req.name,
+            phone=phone,
+            address=req.address,
+            city=req.city,
+            categories=",".join(req.categories) if req.categories else "General",
+            status="pending",  # Pehle pending rahega
+            isOnline=False,
+            isActive=True,
+            orders=0
+        )
+        db.add(new_vendor)
+        db.commit()
+        print(f"✅ NEW VENDOR REGISTER: {vendor_id} - {req.name} - {req.city} - {req.categories} - PENDING")
+        return {"success": True, "vendorId": vendor_id, "status": "pending"}
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Vendor register error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.get("/api/vendor/profile/{vendor_id}")
+def vendor_profile(vendor_id: str):
+    vendor_id = vendor_id.strip()
+    db = SessionLocal()
+    try:
+        v = db.query(Vendor).filter(Vendor.id == vendor_id).first()
+        if not v:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+        return {
+            "id": v.id, "vendorId": v.id, "name": v.name, "owner": v.owner,
+            "phone": v.phone, "city": v.city, "address": v.address,
+            "status": v.status, "categories": v.categories,
+            "isOnline": v.isOnline, "isActive": v.isActive
+        }
+    finally:
+        db.close()
+
+@app.post("/api/vendor/approve/{vendor_id}")
+def vendor_approve(vendor_id: str):
+    vendor_id = vendor_id.strip()
+    db = SessionLocal()
+    try:
+        v = db.query(Vendor).filter(Vendor.id == vendor_id).first()
+        if not v:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+        v.status = "approved"
+        v.isOnline = True
+        v.isActive = True
+        db.commit()
+        print(f"✅ VENDOR APPROVED: {vendor_id}")
+        return {"success": True, "vendorId": vendor_id, "status": "approved"}
+    finally:
+        db.close()
+
+@app.get("/api/admin/vendors")
+def admin_all_vendors():
+    db = SessionLocal()
+    try:
+        all_v = db.query(Vendor).order_by(Vendor.created_at.desc()).all()
+        return [{"id": v.id, "name": v.name, "phone": v.phone, "city": v.city, "status": v.status, "categories": v.categories, "created_at": v.created_at.isoformat() if v.created_at else ""} for v in all_v]
+    finally:
+        db.close()
+# ============= END VENDOR REGISTRATION =============
 @app.get("/api/products")
 def get_products(category: Optional[str]=None):
     db=SessionLocal()

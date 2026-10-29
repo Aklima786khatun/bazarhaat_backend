@@ -390,26 +390,31 @@ def customer_place_order(req: PlaceOrderRequest):
     db = SessionLocal()
     try:
         customer = db.query(Customer).filter(Customer.phone == phone).first()
-        if not customer: raise HTTPException(status_code=404, detail="Customer not found")
+        if not customer: raise HTTPException(404, "Customer not found")
+        
+        # FIND REAL VENDOR - from cart's vendor or city
+        vendor_id = "VENDOR-01"
+        if req.cart and len(req.cart)>0:
+            # if cart has vendor_id, use it
+            first_item = req.cart[0]
+            if "vendor_id" in first_item:
+                vendor_id = first_item["vendor_id"]
+        
         order_id = f"BH-{random.randint(100,999)}-{uuid.uuid4().hex[:3].upper()}"
         otp = str(random.randint(1000,9999))
         total = req.total or sum([float(i.get('price',0)) for i in req.cart])
-        new_order = Order(id=order_id, otp=otp, store_qr=f"STORE-{order_id}", amount=total, customer=customer.name, customer_phone=phone, phone=phone, address=req.address or customer.address or customer.town, status="New", earning=45, vendor_id="VENDOR-01")
+        
+        new_order = Order(
+            id=order_id, otp=otp, store_qr=f"STORE-{order_id}",
+            amount=total, customer=customer.name, customer_phone=phone,
+            phone=phone, address=req.address or customer.address,
+            status="New", earning=45, vendor_id=vendor_id  # <-- DYNAMIC NOW
+        )
         db.add(new_order); db.commit()
-        print(f"🛒 NEW ORDER {order_id} - {customer.name} - ₹{total} - OTP {otp} - VENDOR WILL VIBRATE NOW")
-        return {"success": True, "id": order_id, "order_id": order_id, "otp": otp, "total": total, "message": "Order Placed - Vendor notified"}
-    finally: db.close()
-class OrderItemRequest(BaseModel):
-    vendor_id: Optional[str] = "VENDOR-01"
-    customerName: Optional[str] = "User"
-    customerPhone: Optional[str] = ""
-    total: Optional[float] = 0
-    items: Optional[List[dict]] = []
-    address: Optional[str] = ""
-    status: Optional[str] = "New"
-    otp: Optional[str] = None
-    phone: Optional[str] = ""
-
+        print(f"🛒 NEW ORDER {order_id} -> Vendor {vendor_id} - ₹{total}")
+        return {"success": True, "id": order_id, "otp": otp}
+    finally:
+        db.close()
 @app.post("/api/orders")
 def place_order_generic(req: OrderItemRequest):
     db = SessionLocal()

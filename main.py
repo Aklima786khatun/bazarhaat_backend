@@ -4,11 +4,20 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
+import json 
 import uvicorn, uuid, shutil, random, time, os
 from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from urllib.parse import quote_plus
-
+class OrderItemRequest(BaseModel): # <--- 1. YE MISSING CLASS ADD KARO
+    customerName: str = "Customer"
+    customerPhone: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = ""
+    total: Optional[float] = 0
+    vendor_id: Optional[str] = "VENDOR-01"
+    items: Optional[List[dict]] = []
+    otp: Optional[str] = None
 # ============= FIREBASE =============
 import firebase_admin
 from firebase_admin import auth as firebase_auth
@@ -92,10 +101,25 @@ class Rider(Base):
     license_url = Column(String, default=""); aadhaar_url = Column(String, default="")
 class Order(Base):
     __tablename__ = "orders"
-    id = Column(String, primary_key=True); otp = Column(String); store_qr = Column(String); amount = Column(Float)
-    customer = Column(String); customer_phone = Column(String); phone = Column(String); address = Column(String)
-    status = Column(String, default="New"); earning = Column(Float, default=45); vendor_id = Column(String)
-    rider_id = Column(String, nullable=True); created_at = Column(DateTime, default=datetime.now)
+    id = Column(String, primary_key=True)
+    otp = Column(String)
+    store_qr = Column(String)
+    amount = Column(Float)
+    customer = Column(String)
+    customer_phone = Column(String, index=True)
+    phone = Column(String)
+    address = Column(Text) # Text is better for long address
+    status = Column(String, default="New", index=True)
+    earning = Column(Float, default=45)
+    vendor_id = Column(String, index=True) # index = fast search for vendor orders
+    rider_id = Column(String, nullable=True, index=True)
+    
+    # --- ADD THESE 3 NEW COLUMNS ---
+    items = Column(Text, default="[]")  # Will store cart JSON like [{"name":"Aloo","qty":2}]
+    payment_method = Column(String, default="COD")
+    total_items = Column(Integer, default=1)
+    
+    created_at = Column(DateTime, default=datetime.now)
 class Payout(Base):
     __tablename__ = "payouts"
     id = Column(String, primary_key=True); rider_id = Column(String); amount = Column(Float); method = Column(String)
@@ -149,6 +173,10 @@ try:
             "ALTER TABLE vendors ADD COLUMN status VARCHAR DEFAULT 'pending'",
             "ALTER TABLE vendors ADD COLUMN categories VARCHAR DEFAULT 'General'",
             "ALTER TABLE vendors ADD COLUMN created_at TIMESTAMP DEFAULT NOW()",
+            # --- NEW 3 FOR ORDER - YEHI MISSING THA ---
+            "ALTER TABLE orders ADD COLUMN items TEXT DEFAULT '[]'",
+            "ALTER TABLE orders ADD COLUMN payment_method VARCHAR DEFAULT 'COD'",
+            "ALTER TABLE orders ADD COLUMN total_items INTEGER DEFAULT 1",
         ]
         for s in stmts:
             pg = s.replace("ADD COLUMN", "ADD COLUMN IF NOT EXISTS") if "sqlite" not in DATABASE_URL else s
@@ -157,7 +185,6 @@ try:
             except Exception as ex:
                 print(f"Migration skip: {pg} -> {ex}")
         
-        # 2. CREATE TABLE alag se - 100% safe
         try:
             if "sqlite" not in DATABASE_URL:
                 conn.execute(text("""
@@ -189,51 +216,6 @@ try:
         print("✅ Migration OK")
 except Exception as e: 
     print(f"Migration Note: {e}")
-
-# Vercel pe /tmp writable hai, local pe normal folder
-UPLOAD_BASE = "/tmp/uploads" if os.path.exists("/tmp") and os.access("/tmp", os.W_OK) else "uploads"
-
-os.makedirs(os.path.join(UPLOAD_BASE, "riders"), exist_ok=True)
-os.makedirs(os.path.join(UPLOAD_BASE, "products"), exist_ok=True)
-
-# For use in other places
-UPLOAD_RIDERS = os.path.join(UPLOAD_BASE, "riders")
-UPLOAD_PRODUCTS = os.path.join(UPLOAD_BASE, "products")
-def init_data():
-    if os.getenv("VERCEL") or os.getenv("VERCEL_ENV"):
-        print("⏭️ Skipping seed on Vercel - DB already seeded")
-        return
-    db = SessionLocal()
-    try:
-        if db.query(Vendor).count() == 0:
-            db.add_all([
-                Vendor(id="VENDOR-01", name="Goreswar Kirana", owner="Bikash", phone="9876543211", address="Goreswar Market", city="Goreswar", orders=42, isOnline=True, isActive=True, status="approved", categories="Groceries"),
-                Vendor(id="VENDOR-02", name="Maa Store Pathsala", owner="Ramesh", phone="9876543212", address="Pathsala Market", city="Pathsala", orders=18, isOnline=True, isActive=True, status="approved", categories="Vegetables"),
-            ])
-            db.commit()
-            print("✅ Vendors seeded with approved status")
-        if db.query(Product).count() == 0:
-            db.add_all([
-                Product(name="Fresh Tomato 1kg", price=40, original_price=50, discount=20, offer_text="20% OFF", stock=100, image="https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=200", vendor_id="VENDOR-01", category="Vegetables"),
-                Product(name="Amul Milk 1L", price=65, original_price=70, discount=7, offer_text="7% OFF", stock=50, image="https://images.unsplash.com/photo-1550583724-b2692b85b150?w=200", vendor_id="VENDOR-01", category="Dairy"),
-            ])
-            db.commit()
-        if db.query(Rider).count() == 0:
-            db.add(Rider(id="BH-RIDER-01", name="Rahul Rider", phone="9876543210", vehicle="Bike - AS-12-AB-1234", bike_number="AS-12-AB-1234", bank_account="HDFC ****1234", ifsc="HDFC0001234", upi="rahul@upi", rating=4.8, total_deliveries=22, earning=320.0, is_verified=True))
-            db.commit()
-        if db.query(Order).count() == 0:
-            db.add_all([
-                Order(id="BH-102", otp="1234", store_qr="STORE-BH-102", amount=250, customer="Rahul Das", customer_phone="9876543210", phone="9876543210", address="Near College, Goreswar, 2.3km", status="New", earning=45, vendor_id="VENDOR-01"),
-                Order(id="BH-103", otp="5678", store_qr="STORE-BH-103", amount=450, customer="Ankit Sharma", customer_phone="9876543211", phone="9876543211", address="Main Market, Baihata", status="New", earning=60, vendor_id="VENDOR-01"),
-            ])
-            db.commit()
-    except Exception as e: 
-        print(f"Seed error: {e}")
-        db.rollback()
-    finally: 
-        db.close()
-
-init_data()
 
 class RiderOtpRequest(BaseModel): phone: str
 class RiderOtpVerify(BaseModel): phone: str; otp: str

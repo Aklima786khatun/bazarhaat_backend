@@ -372,29 +372,28 @@ def customer_place_order(req: PlaceOrderRequest):
     db = SessionLocal()
     try:
         customer = db.query(Customer).filter(Customer.phone == phone).first()
-        if not customer: raise HTTPException(404, "Customer not found")
-        
-        # FIND REAL VENDOR - from cart's vendor or city
+        if not customer: 
+            raise HTTPException(status_code=404, detail="Customer not found")
         vendor_id = "VENDOR-01"
         if req.cart and len(req.cart)>0:
-            # if cart has vendor_id, use it
             first_item = req.cart[0]
-            if "vendor_id" in first_item:
-                vendor_id = first_item["vendor_id"]
-        
+            if "vendor_id" in first_item and first_item["vendor_id"]:
+                vendor_id = str(first_item["vendor_id"]).strip()
         order_id = f"BH-{random.randint(100,999)}-{uuid.uuid4().hex[:3].upper()}"
         otp = str(random.randint(1000,9999))
-        total = req.total or sum([float(i.get('price',0)) for i in req.cart])
-        
+        total = req.total or sum([float(i.get('price',0))*int(i.get('qty',1) if 'qty' in i else 1) for i in req.cart])
         new_order = Order(
             id=order_id, otp=otp, store_qr=f"STORE-{order_id}",
             amount=total, customer=customer.name, customer_phone=phone,
             phone=phone, address=req.address or customer.address,
-            status="New", earning=45, vendor_id=vendor_id  # <-- DYNAMIC NOW
+            status="New", earning=45, vendor_id=vendor_id,
+            items=json.dumps(req.cart),
+            payment_method=req.payment_id or "COD",
+            total_items=len(req.cart)
         )
         db.add(new_order); db.commit()
         print(f"🛒 NEW ORDER {order_id} -> Vendor {vendor_id} - ₹{total}")
-        return {"success": True, "id": order_id, "otp": otp}
+        return {"success": True, "id": order_id, "order_id": order_id, "otp": otp, "vendor_id": vendor_id}
     finally:
         db.close()
 @app.post("/api/orders")
@@ -928,5 +927,13 @@ def verify_pickup(data: dict):
     finally:
         db.close()
 
+# ===== FIX FOR RENDER UPLOAD DIR =====
+UPLOAD_BASE = "/tmp/uploads" if os.path.exists("/tmp") and os.access("/tmp", os.W_OK) else "uploads"
+os.makedirs(os.path.join(UPLOAD_BASE, "riders"), exist_ok=True)
+os.makedirs(os.path.join(UPLOAD_BASE, "products"), exist_ok=True)
+UPLOAD_RIDERS = os.path.join(UPLOAD_BASE, "riders")
+UPLOAD_PRODUCTS = os.path.join(UPLOAD_BASE, "products")
+
 app.mount("/uploads", StaticFiles(directory=UPLOAD_BASE), name="uploads")
-if __name__=="__main__": uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+if __name__=="__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

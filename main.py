@@ -15,7 +15,7 @@ class OrderItemRequest(BaseModel): # <--- 1. YE MISSING CLASS ADD KARO
     phone: Optional[str] = None
     address: Optional[str] = ""
     total: Optional[float] = 0
-    vendor_id: Optional[str] = "VENDOR-01"
+    vendor_id: Optional[str] = "VENDOR-1793297620"
     items: Optional[List[dict]] = []
     otp: Optional[str] = None
 # ============= FIREBASE =============
@@ -147,7 +147,7 @@ class Customer(Base):
     town = Column(String, nullable=True, default="Hatidhura")
     pincode = Column(String, nullable=True, default="783332")
     created_at = Column(DateTime, default=datetime.now)
-
+Base.metadata.create_all(bind=engine)
 otp_store = {}; rider_otp_store = {}
 
 try:
@@ -222,13 +222,30 @@ class RiderOtpVerify(BaseModel): phone: str; otp: str
 class FirebaseVerifyRequest(BaseModel): idToken: str; phone: str
 class CustomerLoginRequest(BaseModel): phone: str
 class CustomerVerifyRequest(BaseModel): phone: str; otp: str; name: Optional[str] = None
-class CustomerRegisterRequest(BaseModel): phone: str; name: str; town: Optional[str] = "Hatidhura"; address: Optional[str] = ""; pincode: Optional[str] = "783332"
-class PlaceOrderRequest(BaseModel): phone: str; cart: List[dict]; total: float; address: Optional[str] = ""; payment_id: Optional[str] = "COD"
-class ApproveRiderRequest(BaseModel): rider_id: Optional[str] = None; id: Optional[str] = None; is_verified: Optional[bool] = True
+class CustomerRegisterRequest(BaseModel):
+    phone: str
+    name: str
+    town: Optional[str] = "Hatidhura"
+    address: Optional[str] = ""
+    pincode: Optional[str] = "783332"
 
+class PlaceOrderRequest(BaseModel):
+    phone: str
+    cart: List[dict]
+    total: float
+    address: Optional[str] = ""
+    payment_id: Optional[str] = "COD"
+    vendor_id: Optional[str] = None
+    town: Optional[str] = None
+    zone: Optional[str] = None
+
+class ApproveRiderRequest(BaseModel):
+    rider_id: Optional[str] = None
+    id: Optional[str] = None
+    is_verified: Optional[bool] = True
 @app.get("/")
-def home(): return {"message": "BazarHaat Backend v4 Final - All Fixed", "status": "OK", "docs": "/docs"}
-
+def home():
+    return {"message": "BazarHaat Backend v4 Final - All Fixed", "status": "OK"}
 # --- RIDER APIS ---
 @app.post("/api/rider/auth/firebase-verify")
 def firebase_verify_rider(req: FirebaseVerifyRequest):
@@ -365,7 +382,6 @@ def verify_customer_otp(req: CustomerVerifyRequest):
         otp_store.pop(phone, None)
         return {"success": True, "customer": {"id": customer.id, "phone": customer.phone, "name": customer.name, "town": customer.town or "Hatidhura", "pincode": customer.pincode or "783332", "address": customer.address or ""}, "token": f"token_{customer.id}_{int(time.time())}"}
     finally: db.close()
-
 @app.post("/api/customer/place-order")
 def customer_place_order(req: PlaceOrderRequest):
     phone = clean_phone(req.phone)
@@ -374,11 +390,18 @@ def customer_place_order(req: PlaceOrderRequest):
         customer = db.query(Customer).filter(Customer.phone == phone).first()
         if not customer: 
             raise HTTPException(status_code=404, detail="Customer not found")
-        vendor_id = "VENDOR-01"
-        if req.cart and len(req.cart)>0:
+        
+        # NEW: vendor_id 3 jagah se dhoondo - top-level > cart item > default
+        vendor_id = "VENDOR-1793297620"
+        if req.vendor_id:
+            vendor_id = str(req.vendor_id).strip()
+        elif req.cart and len(req.cart) > 0:
             first_item = req.cart[0]
-            if "vendor_id" in first_item and first_item["vendor_id"]:
+            if first_item.get("vendor_id"):
                 vendor_id = str(first_item["vendor_id"]).strip()
+            elif first_item.get("vendorId"):
+                vendor_id = str(first_item["vendorId"]).strip()
+
         order_id = f"BH-{random.randint(100,999)}-{uuid.uuid4().hex[:3].upper()}"
         otp = str(random.randint(1000,9999))
         total = req.total or sum([float(i.get('price',0))*int(i.get('qty',1) if 'qty' in i else 1) for i in req.cart])
@@ -396,6 +419,12 @@ def customer_place_order(req: PlaceOrderRequest):
         return {"success": True, "id": order_id, "order_id": order_id, "otp": otp, "vendor_id": vendor_id}
     finally:
         db.close()
+
+# ALIAS - Agar Customer App purana /api/customer/order mare toh bhi chale
+@app.post("/api/customer/order")
+def customer_place_order_alias(req: PlaceOrderRequest):
+    return customer_place_order(req)
+
 @app.post("/api/orders")
 def place_order_generic(req: OrderItemRequest):
     db = SessionLocal()
@@ -406,43 +435,24 @@ def place_order_generic(req: OrderItemRequest):
         total = req.total or 0
         if total == 0 and req.items:
             total = sum([float(i.get('price',0)) * int(i.get('qty',1) if 'qty' in i else 1) for i in req.items])
-        vendor_id = req.vendor_id or "VENDOR-01"
-        new_order = Order(id=order_id, otp=otp, store_qr=f"STORE-{order_id}", amount=total, customer=req.customerName, customer_phone=phone, phone=phone, address=req.address, status="New", earning=45, vendor_id=vendor_id)
+        vendor_id = req.vendor_id or "VENDOR-1793297620"
+        # FIX: items bhi save karo, nahi toh Vendor ko item nahi dikhega
+        new_order = Order(
+            id=order_id, otp=otp, store_qr=f"STORE-{order_id}", amount=total,
+            customer=req.customerName, customer_phone=phone, phone=phone,
+            address=req.address, status="New", earning=45, vendor_id=vendor_id,
+            items=json.dumps(req.items or []),
+            payment_method="COD",
+            total_items=len(req.items or [])
+        )
         db.add(new_order); db.commit()
         print(f"🛒 NEW ORDER via /api/orders {order_id} - {req.customerName} - ₹{total} - Vendor: {vendor_id} - OTP {otp}")
-        return {"success": True, "id": order_id, "order_id": order_id, "otp": otp, "total": total}
+        return {"success": True, "id": order_id, "order_id": order_id, "otp": otp, "total": total, "vendor_id": vendor_id}
     except Exception as e:
         db.rollback()
         print(f"❌ /api/orders Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally: db.close()
-@app.get("/api/customer/orders/{phone}")
-def get_customer_orders(phone: str):
-    clean = clean_phone(phone)
-    db = SessionLocal()
-    try:
-        orders = db.query(Order).filter(Order.customer_phone == clean).order_by(Order.created_at.desc()).all()
-        return [{"id": o.id, "otp": o.otp, "total": o.amount, "status": o.status, "date": o.created_at.isoformat() if o.created_at else "", "count": 1} for o in orders]
-    finally: db.close()
-@app.post("/api/rider/location")
-def update_rider_location(data: dict):
-    db = SessionLocal()
-    try:
-        order_id = str(data.get("orderId") or data.get("order_id") or "")
-        rider_id = str(data.get("rider_id") or "")
-        lat = float(data.get("lat") or 0)
-        lng = float(data.get("lng") or 0)
-        if not order_id:
-            raise HTTPException(status_code=400, detail="orderId required")
-        db.query(RiderLocation).filter(RiderLocation.order_id == order_id).delete()
-        new_loc = RiderLocation(order_id=order_id, rider_id=rider_id, lat=lat, lng=lng)
-        db.add(new_loc)
-        db.commit()
-        print(f"📍 LIVE {order_id} - {rider_id} => {lat},{lng}")
-        return {"success": True, "orderId": order_id, "lat": lat, "lng": lng}
-    finally:
-        db.close()
-
 @app.get("/api/rider/location/{order_id}")
 def get_rider_location(order_id: str):
     db = SessionLocal()
@@ -800,7 +810,7 @@ async def register_rider(rider_id: str = Form(...), name: str = Form(...), phone
 @app.post("/api/vendor/products")
 @app.post("/vendor/add-product")
 async def vendor_add_product(
-    vendor_id: str = Form("VENDOR-01"),
+    vendor_id: str = Form("VENDOR-1793297620"),
     name: str = Form(None),
     Product_Name: str = Form(None),
     price: float = Form(None),
@@ -818,7 +828,7 @@ async def vendor_add_product(
 ):
     db = SessionLocal()
     try:
-        vendor_id = str(vendor_id or "VENDOR-01").strip()
+        vendor_id = str(vendor_id or "VENDOR-1793297620").strip()
         final_name = str(name or Product_Name or "Product").strip()
         final_category = str(category or "General").strip()
         final_offer = str(offer_text or "").strip()

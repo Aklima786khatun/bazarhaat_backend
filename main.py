@@ -570,7 +570,7 @@ def get_products(category: Optional[str]=None):
 def get_vendor_products(vendor_id: str): db=SessionLocal(); p=db.query(Product).filter(Product.vendor_id==vendor_id).all(); db.close(); return p
 @app.get("/api/vendor/orders/{vendor_id}")
 def get_vendor_orders(vendor_id: str):
-    vendor_id = vendor_id.strip()  # SPACE FIX
+    vendor_id = vendor_id.strip()
     db = SessionLocal()
     try:
         print(f"📦 FETCH VENDOR ORDERS: '{vendor_id}'")
@@ -578,6 +578,17 @@ def get_vendor_orders(vendor_id: str):
         print(f"✅ Found {len(orders)} orders for {vendor_id}")
         result = []
         for o in orders:
+            # ✅ ITEMS KO JSON SE WAPAS LIST BANAO - YEHI MISSING THA
+            try:
+                items_list = json.loads(o.items) if o.items else []
+                if isinstance(items_list, dict):
+                    items_list = [items_list]
+                if not isinstance(items_list, list):
+                    items_list = []
+            except Exception as e:
+                print(f"Items parse error for {o.id}: {e}")
+                items_list = []
+
             result.append({
                 "id": o.id,
                 "orderId": o.id,
@@ -591,6 +602,9 @@ def get_vendor_orders(vendor_id: str):
                 "address": o.address,
                 "customer_phone": o.customer_phone,
                 "phone": o.phone,
+                "items": items_list,  # ✅ AB YE JAYEGA
+                "total_items": o.total_items or len(items_list),
+                "payment_method": o.payment_method or "COD",
                 "created_at": o.created_at.isoformat() if o.created_at else ""
             })
         return result
@@ -638,7 +652,6 @@ def vendor_accept_order(order_id: str):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
-
 @app.post("/api/vendor/orders/{order_id}/reject")
 def vendor_reject_order(order_id: str):
     order_id = order_id.strip()
@@ -653,6 +666,27 @@ def vendor_reject_order(order_id: str):
         return {"success": True}
     finally:
         db.close()
+
+# ===== MASKED CALL - YAHAN PASTE KIYA =====
+@app.post("/api/vendor/orders/{order_id}/call")
+def vendor_masked_call(order_id: str):
+    order_id = order_id.strip()
+    db = SessionLocal()
+    try:
+        o = db.query(Order).filter(Order.id == order_id).first()
+        if not o:
+            raise HTTPException(status_code=404, detail="Order not found")
+        real_phone = o.customer_phone or o.phone or ""
+        return {
+            "success": True,
+            "order_id": order_id,
+            "maskedNumber": real_phone,
+            "proxyNumber": real_phone,
+            "message": "Call connecting..."
+        }
+    finally:
+        db.close()
+# ===== MASKED CALL END =====
 @app.get("/api/rider/orders")
 def get_rider_available_orders():
     db = SessionLocal()

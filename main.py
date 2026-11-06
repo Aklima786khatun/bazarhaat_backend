@@ -569,11 +569,15 @@ def vendor_accept_order(order_id: str):
         o = db.query(Order).filter(Order.id == order_id).first()
         if not o:
             raise HTTPException(status_code=404, detail="Order not found")
-        pickup_otp = str(random.randint(1000,9999))
+        
+        pickup_otp = str(random.randint(1000,9999)) # e.g. 4048
         o.status = "Accepted_by_Vendor"
         o.pickup_otp = pickup_otp
         db.commit()
-        print(f"✅ Vendor Accepted {order_id} - Pickup OTP {pickup_otp}")
+
+        # ✅ Rider ko Notification - Yahi tum bol rahe ho
+        print(f"🔔 NOTIFICATION to Rider: Order {order_id} Ready! Pickup OTP {pickup_otp} - Dukaan par jaake verify karo")
+
         return {"success": True, "order_id": order_id, "status": "Accepted_by_Vendor", "pickup_otp": pickup_otp}
     except Exception as e:
         db.rollback()
@@ -582,6 +586,20 @@ def vendor_accept_order(order_id: str):
     finally:
         db.close()
 
+# Rider App ye API maar kar apna Pickup OTP lega - Notification ke liye
+@app.get("/api/rider/pickup-otp/{order_id}")
+def get_pickup_otp_for_rider(order_id: str):
+    db = SessionLocal()
+    try:
+        o = db.query(Order).filter(Order.id == order_id).first()
+        if not o:
+            raise HTTPException(status_code=404, detail="Order not found")
+        # Sirf tab milega jab Vendor ne Accept kar liya ho
+        if o.status in ["New"]:
+            return {"success": False, "message": "Vendor ne abhi Accept nahi kiya"}
+        return {"success": True, "order_id": order_id, "pickup_otp": o.pickup_otp, "message": f"Vendor ne Accept kiya - Pickup OTP {o.pickup_otp}"}
+    finally:
+        db.close()
 @app.post("/api/vendor/orders/{order_id}/reject")
 def vendor_reject_order(order_id: str):
     order_id = order_id.strip()
@@ -613,11 +631,26 @@ def vendor_masked_call(order_id: str):
 def get_rider_available_orders():
     db = SessionLocal()
     try:
-        orders = db.query(Order).filter(Order.status.in_(["New","Accepted_by_Vendor","Assigned","Picked Up","Accepted_by_Rider"])).order_by(Order.created_at.desc()).all()
-        return [{"id": o.id, "customer": o.customer, "amount": o.amount, "otp": "", "pickup_otp": "", "delivery_otp": "", "store_qr": o.store_qr, "status": o.status, "address": o.address, "customer_phone": o.customer_phone, "vendor_id": o.vendor_id, "rider_id": o.rider_id} for o in orders]
+        orders = db.query(Order).filter(Order.status.in_(["New","Accepted_by_Vendor","Assigned","Picked Up","Picked_by_Rider","Accepted_by_Rider"])).order_by(Order.created_at.desc()).all()
+        return [
+            {
+                "id": o.id, 
+                "customer": o.customer, 
+                "amount": o.amount, 
+                "otp": "", 
+                "pickup_otp": "",
+                "delivery_otp": "",
+                "store_qr": o.store_qr, 
+                "status": o.status, 
+                "address": o.address,
+                "customer_phone": o.customer_phone,
+                "vendor_id": o.vendor_id,
+                "rider_id": o.rider_id
+            } 
+            for o in orders
+        ]
     finally:
         db.close()
-
 @app.post("/api/rider/orders/{order_id}/accept")
 def rider_accept_order(order_id: str, data: dict):
     db = SessionLocal()
@@ -790,6 +823,7 @@ def rider_notify(order_id: str, data: dict = {}):
     return {"success": True, "order_id": order_id, "message": "Riders notified"}
 
 # ✅ FIX 2 - Ab Pickup OTP check hoga, STORE- nahi
+# ✅ FIX 2 - Ab Pickup OTP check hoga, STORE- nahi
 @app.post("/api/rider/verify-pickup")
 def verify_pickup(data: dict):
     db = SessionLocal()
@@ -822,12 +856,27 @@ def verify_pickup(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
-
 # Alias - Rider App agar purana URL mare to bhi chale
 @app.post("/api/rider/orders/{order_id}/verify-qr")
 def verify_qr_alias(order_id: str, data: dict):
     data["order_id"] = order_id
     return verify_pickup(data)
+
+# Purane order ko 1 baar fix karne ke liye
+@app.get("/api/admin/fix-order/{order_id}/{new_otp}")
+def fix_old_order(order_id: str, new_otp: str):
+    db = SessionLocal()
+    try:
+        o = db.query(Order).filter(Order.id == order_id).first()
+        if not o:
+            return {"success": False, "message": "Order not found"}
+        o.delivery_otp = new_otp
+        o.otp = new_otp
+        o.pickup_otp = new_otp
+        db.commit()
+        return {"success": True, "order_id": order_id, "delivery_otp": new_otp, "message": "Ab is OTP se verify ho jayega"}
+    finally:
+        db.close()
 
 app.mount("/uploads", StaticFiles(directory=UPLOAD_BASE), name="uploads")
 if __name__=="__main__":

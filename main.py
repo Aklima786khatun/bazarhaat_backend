@@ -75,6 +75,9 @@ def clean_phone(p: str) -> str:
     p = str(p).replace("+91","").replace(" ","").replace("-","").strip()
     return p[-10:] if len(p) >= 10 else p
 
+def product_to_dict(p):
+    return {"id": p.id, "name": p.name, "price": p.price, "original_price": p.original_price, "discount": p.discount, "offer_text": p.offer_text or "", "stock": p.stock, "image": p.image, "imageUrl": p.image, "category": p.category, "vendor_id": p.vendor_id, "vendorId": p.vendor_id, "store_id": getattr(p, "store_id", "") or "", "storeId": getattr(p, "store_id", "") or "", "description": p.description or ""}
+
 def fix_item_image(item: dict, db=None):
     it = dict(item)
     img = it.get("image") or it.get("imageUrl") or it.get("image_url") or it.get("img") or it.get("photo") or ""
@@ -94,6 +97,16 @@ def fix_item_image(item: dict, db=None):
         it["name"] = it.get("productName") or it.get("title") or "Product"
     if it.get("qty") is None:
         it["qty"] = it.get("quantity") or 1
+    # ✅ Vendor bhi fix karo - Item me vendor_id nahi hai to Product se lo
+    if not it.get("vendor_id") and not it.get("vendorId"):
+        try:
+            nm = str(it.get("name") or "").strip()
+            if nm and db is not None:
+                pr = db.query(Product).filter(Product.name.ilike(f"%{nm}%")).first()
+                if pr and pr.vendor_id:
+                    it["vendor_id"] = pr.vendor_id
+                    it["vendorId"] = pr.vendor_id
+        except: pass
     return it
 
 class Vendor(Base):
@@ -119,6 +132,7 @@ class Product(Base):
     original_price = Column(Float, nullable=True); discount = Column(Float, default=0); offer_text = Column(String, default="")
     stock = Column(Integer, default=100); image = Column(Text); category = Column(String, default="General"); vendor_id = Column(String)
     description = Column(Text, default="")
+    store_id = Column(String, default="")  # ✅ FIXED - Store ID Column add kiya!
 
 class Rider(Base):
     __tablename__ = "riders"
@@ -197,6 +211,7 @@ try:
             "ALTER TABLE products ADD COLUMN discount FLOAT DEFAULT 0",
             "ALTER TABLE products ADD COLUMN offer_text VARCHAR DEFAULT ''",
             "ALTER TABLE products ADD COLUMN description TEXT DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN store_id VARCHAR DEFAULT ''",
             "ALTER TABLE customers ADD COLUMN town VARCHAR DEFAULT 'Hatidhura'",
             "ALTER TABLE customers ADD COLUMN pincode VARCHAR DEFAULT '783332'",
             "ALTER TABLE vendors ADD COLUMN status VARCHAR DEFAULT 'pending'",
@@ -263,7 +278,6 @@ class ApproveRiderRequest(BaseModel):
 def home():
     return {"message": "BazarHaat Backend v7 Final - ANAMU7028 - STORES FIXED", "status": "OK"}
 
-# ✅ ✅ ✅ STORES FIX - YEHI THA 404 WALA ERROR ✅ ✅ ✅
 @app.get("/api/stores")
 def get_stores():
     db = SessionLocal()
@@ -428,14 +442,17 @@ def customer_place_order(req: PlaceOrderRequest):
         real_name = req.customerName or req.customer_name or req.name or customer.name or "Customer"
         if real_name in ["", "User", "user"]:
             real_name = customer.name
+        # ✅ FIXED - Raj ka Order Raj ko hi jayega!
         vendor_id = MAIN_VENDOR
         if req.vendor_id and req.vendor_id.strip() not in ["", OLD_VENDOR]:
             vendor_id = str(req.vendor_id).strip()
         elif req.cart and len(req.cart) > 0:
             first_item = req.cart[0]
             vid = first_item.get("vendor_id") or first_item.get("vendorId") or ""
-            if vid and str(vid).strip() != OLD_VENDOR:
+            if vid and str(vid).strip() not in ["", OLD_VENDOR]:
                 vendor_id = str(vid).strip()
+            elif vid and str(vid).strip() == OLD_VENDOR:
+                vendor_id = MAIN_VENDOR
         order_id = f"BH-{random.randint(100,999)}-{uuid.uuid4().hex[:3].upper()}"
         delivery_otp = str(random.randint(1000,9999))
         total = req.total or sum([float(i.get('price',0))*int(i.get('qty',1) if 'qty' in i else i.get('quantity',1)) for i in req.cart])
@@ -449,6 +466,11 @@ def customer_place_order(req: PlaceOrderRequest):
         if not full_address:
             full_address = f"{town} - {pincode}"
         fixed_cart = [fix_item_image(it, db) for it in (req.cart or [])]
+        # ✅ Har Item me vendor_id pakka karo
+        for it in fixed_cart:
+            if not it.get("vendor_id"):
+                it["vendor_id"] = vendor_id
+                it["vendorId"] = vendor_id
         new_order = Order(
             id=order_id, otp=delivery_otp, delivery_otp=delivery_otp, pickup_otp="", store_qr=f"STORE-{order_id}",
             amount=total, customer=real_name, customer_phone=phone,
@@ -487,6 +509,9 @@ def place_order_generic(req: OrderItemRequest):
             real_name = cust.name
         full_address = req.address or (cust.address if cust else "") or "Hatidhura - 783332"
         fixed_items = [fix_item_image(it, db) for it in (req.items or [])]
+        for it in fixed_items:
+            if not it.get("vendor_id"):
+                it["vendor_id"] = vendor_id
         new_order = Order(
             id=order_id, otp=delivery_otp, delivery_otp=delivery_otp, pickup_otp="", store_qr=f"STORE-{order_id}", amount=total,
             customer=real_name, customer_phone=phone, phone=phone,
@@ -516,7 +541,12 @@ def get_rider_location(order_id: str):
         db.close()
 
 @app.get("/api/vendors")
-def get_vendors(): db=SessionLocal(); v=db.query(Vendor).all(); db.close(); return v
+def get_vendors():
+    db = SessionLocal()
+    try:
+        vs = db.query(Vendor).all()
+        return [{"id": v.id, "name": v.name, "owner": v.owner, "phone": v.phone, "city": v.city, "address": v.address, "status": v.status, "categories": v.categories, "store_id": v.store_id or "", "storeId": v.store_id or ""} for v in vs]
+    finally: db.close()
 
 class VendorRegisterRequest(BaseModel):
     storeId: Optional[str] = ""
@@ -599,7 +629,7 @@ def vendor_profile(vendor_id: str):
         v = db.query(Vendor).filter(Vendor.id == vendor_id).first()
         if not v:
             raise HTTPException(status_code=404, detail="Vendor not found")
-        return {"id": v.id, "vendorId": v.id, "name": v.name, "owner": v.owner, "phone": v.phone, "city": v.city, "address": v.address, "status": v.status, "categories": v.categories, "isOnline": v.isOnline, "isActive": v.isActive}
+        return {"id": v.id, "vendorId": v.id, "name": v.name, "owner": v.owner, "phone": v.phone, "city": v.city, "address": v.address, "status": v.status, "categories": v.categories, "isOnline": v.isOnline, "isActive": v.isActive, "store_id": v.store_id or "", "storeId": v.store_id or ""}
     finally:
         db.close()
 
@@ -629,30 +659,46 @@ def admin_all_vendors():
         db.close()
 
 @app.get("/api/products")
-def get_products(category: Optional[str]=None):
+def get_products(category: Optional[str]=None, vendor_id: Optional[str]=None, store_id: Optional[str]=None):
     db=SessionLocal()
     try:
-        if category and category!="All": return db.query(Product).filter(Product.stock>0, Product.category.ilike(f"%{category}%")).all()
-        return db.query(Product).filter(Product.stock>0).all()
+        q = db.query(Product).filter(Product.stock>0)
+        if vendor_id:
+            q = q.filter(Product.vendor_id==vendor_id)
+        if store_id:
+            q = q.filter(Product.store_id==store_id)
+        if category and category!="All":
+            q = q.filter(Product.category.ilike(f"%{category}%"))
+        return [product_to_dict(p) for p in q.all()]
     finally: db.close()
 
+# ✅ FIXED - Fallback SIRF ANAMU7028 ke liye, Raj ke liye NAHI!
 @app.get("/api/vendor/products/{vendor_id}")
 def get_vendor_products(vendor_id: str):
     db=SessionLocal()
     try:
-        p=db.query(Product).filter(Product.vendor_id==vendor_id).all()
-        if not p and vendor_id != OLD_VENDOR:
-            p=db.query(Product).filter(Product.vendor_id==OLD_VENDOR).all()
-        return p
+        vendor_id = vendor_id.strip()
+        # OLD ID aaye to MAIN me convert karo
+        if vendor_id == OLD_VENDOR:
+            vendor_id = MAIN_VENDOR
+        p = db.query(Product).filter(Product.vendor_id==vendor_id).all()
+        # ✅ Sirf MAIN_VENDOR ko Old Product dikhao - Raj ko nahi!
+        if not p and vendor_id == MAIN_VENDOR:
+            p = db.query(Product).filter(Product.vendor_id==OLD_VENDOR).all()
+        return [product_to_dict(x) for x in p]
     finally: db.close()
 
+# ✅ FIXED - Fallback SIRF ANAMU7028 ke liye!
 @app.get("/api/vendor/orders/{vendor_id}")
 def get_vendor_orders(vendor_id: str):
     vendor_id = vendor_id.strip()
+    if vendor_id == OLD_VENDOR:
+        vendor_id = MAIN_VENDOR
     db = SessionLocal()
     try:
         orders = db.query(Order).filter(Order.vendor_id == vendor_id).order_by(Order.created_at.desc()).all()
-        if not orders and vendor_id != OLD_VENDOR:
+        # ✅ Sirf MAIN_VENDOR ko Old Order dikhao!
+        if not orders and vendor_id == MAIN_VENDOR:
             orders = db.query(Order).filter(Order.vendor_id == OLD_VENDOR).order_by(Order.created_at.desc()).all()
         result = []
         for o in orders:
@@ -666,32 +712,36 @@ def get_vendor_orders(vendor_id: str):
             result.append({
                 "id": o.id, "orderId": o.id, "customer": o.customer, "customerName": o.customer,
                 "amount": o.amount, "total": o.amount,
-                "otp": o.pickup_otp or "",
+                "otp": o.delivery_otp or o.otp or "",
                 "pickup_otp": o.pickup_otp or "",
-                "delivery_otp": "",
+                "delivery_otp": o.delivery_otp or o.otp or "",
                 "store_qr": o.store_qr, "status": o.status, "address": o.address,
                 "customer_phone": o.customer_phone, "phone": o.phone,
                 "items": items_list, "total_items": o.total_items or len(items_list),
                 "payment_method": o.payment_method or "COD",
-                "created_at": o.created_at.isoformat() if o.created_at else ""
+                "created_at": o.created_at.isoformat() if o.created_at else "",
+                "vendor_id": o.vendor_id
             })
         return result
     finally:
         db.close()
 
+# ✅ FIXED - Fallback SIRF ANAMU7028 ke liye!
 @app.get("/api/vendor/stats/{vendor_id}")
 def vendor_stats(vendor_id: str):
     vendor_id = vendor_id.strip()
+    if vendor_id == OLD_VENDOR:
+        vendor_id = MAIN_VENDOR
     db = SessionLocal()
     try:
         pc = db.query(Product).filter(Product.vendor_id == vendor_id).count()
         orders = db.query(Order).filter(Order.vendor_id == vendor_id).all()
-        if not orders and vendor_id != OLD_VENDOR:
+        if not orders and vendor_id == MAIN_VENDOR:
             orders = db.query(Order).filter(Order.vendor_id == OLD_VENDOR).all()
             pc = db.query(Product).filter(Product.vendor_id == OLD_VENDOR).count()
         today = datetime.now().date()
         today_orders = [o for o in orders if o.created_at and o.created_at.date() == today]
-        return {"product_count": pc, "total_orders": len(orders), "new_orders": len([o for o in orders if o.status == "New"]), "pending_orders": len([o for o in orders if o.status == "New"]), "today_income": sum([o.amount for o in today_orders]), "today_orders": len(today_orders), "total_income": sum([o.amount for o in orders]), "earnings": sum([o.amount for o in orders if o.status == "Delivered"]), "vendor_id": vendor_id, "rating": 4.8}
+        return {"product_count": pc, "total_orders": len(orders), "new_orders": len([o for o in orders if o.status == "New"]), "pending_orders": len([o for o in orders if o.status == "New"]), "today_income": sum([o.amount or 0 for o in today_orders]), "today_orders": len(today_orders), "total_income": sum([o.amount or 0 for o in orders]), "earnings": sum([o.amount or 0 for o in orders if o.status == "Delivered"]), "vendor_id": vendor_id, "rating": 4.8}
     finally:
         db.close()
 
@@ -773,7 +823,7 @@ def get_rider_available_orders():
             result.append({
                 "id": o.id, "orderId": o.id, "customer": o.customer, "customerName": o.customer,
                 "amount": o.amount, "total": o.amount,
-                "otp": "", "pickup_otp": "", "delivery_otp": "",
+                "otp": o.delivery_otp or o.otp or "", "pickup_otp": o.pickup_otp or "", "delivery_otp": o.delivery_otp or o.otp or "",
                 "store_qr": o.store_qr, "status": o.status, "address": o.address,
                 "customer_phone": o.customer_phone, "phone": o.phone,
                 "vendor_id": o.vendor_id, "rider_id": o.rider_id,
@@ -819,11 +869,16 @@ def rider_deliver_order(order_id: str, data: dict):
     finally: db.close()
 
 @app.get("/api/riders")
-def get_all_riders_alias(): db=SessionLocal(); r=db.query(Rider).all(); db.close(); return r
+def get_all_riders_alias():
+    db=SessionLocal()
+    try:
+        rs=db.query(Rider).all()
+        return [{"id": r.id, "name": r.name, "phone": r.phone, "is_verified": r.is_verified, "bike_number": r.bike_number, "earning": r.earning} for r in rs]
+    finally: db.close()
 @app.get("/api/rider/all")
-def get_rider_all(): db=SessionLocal(); r=db.query(Rider).all(); db.close(); return r
+def get_rider_all(): return get_all_riders_alias()
 @app.get("/api/admin/riders")
-def admin_get_all_riders(): db=SessionLocal(); r=db.query(Rider).all(); db.close(); return r
+def admin_get_all_riders(): return get_all_riders_alias()
 @app.post("/api/admin/riders/{rider_id}/verify")
 def admin_verify_rider_by_id(rider_id: str):
     db=SessionLocal()
@@ -869,7 +924,12 @@ def get_settings_api(): return {"isUserAppLive": True, "isVendorAppLive": True, 
 @app.post("/api/settings")
 def update_settings_api(data: dict): return {"success":True}
 @app.get("/api/rider/payouts/{rider_id}")
-def get_payouts(rider_id: str): db=SessionLocal(); p=db.query(Payout).filter(Payout.rider_id==rider_id).all(); db.close(); return p
+def get_payouts(rider_id: str):
+    db=SessionLocal()
+    try:
+        ps=db.query(Payout).filter(Payout.rider_id==rider_id).all()
+        return [{"id": p.id, "rider_id": p.rider_id, "amount": p.amount, "method": p.method, "status": p.status} for p in ps]
+    finally: db.close()
 @app.post("/api/rider/payout/request")
 def request_payout(data: dict):
     db=SessionLocal()
@@ -906,12 +966,18 @@ async def register_rider(rider_id: str = Form(...), name: str = Form(...), phone
 
 @app.post("/api/vendor/products")
 @app.post("/vendor/add-product")
-async def vendor_add_product(vendor_id: str = Form("ANAMU7028"), name: str = Form(None), Product_Name: str = Form(None), price: float = Form(None), sell_price: float = Form(None), original_price: float = Form(0), discount: float = Form(0), discount_percent: float = Form(0), stock: int = Form(100), category: str = Form("General"), offer_text: str = Form(""), description: str = Form(""), image: UploadFile = File(None), image_file: UploadFile = File(None), file: UploadFile = File(None)):
+async def vendor_add_product(vendor_id: str = Form("ANAMU7028"), store_id: str = Form(""), storeId: str = Form(""), name: str = Form(None), Product_Name: str = Form(None), price: float = Form(None), sell_price: float = Form(None), original_price: float = Form(0), discount: float = Form(0), discount_percent: float = Form(0), stock: int = Form(100), category: str = Form("General"), offer_text: str = Form(""), description: str = Form(""), image: UploadFile = File(None), image_file: UploadFile = File(None), file: UploadFile = File(None)):
     db = SessionLocal()
     try:
         vendor_id = str(vendor_id or MAIN_VENDOR).strip()
         if vendor_id == OLD_VENDOR:
             vendor_id = MAIN_VENDOR
+        final_store_id = str(store_id or storeId or "").strip()
+        if not final_store_id:
+            # Vendor ke Store se lo
+            v = db.query(Vendor).filter(Vendor.id == vendor_id).first()
+            if v and v.store_id:
+                final_store_id = v.store_id
         final_name = str(name or Product_Name or "Product").strip()
         final_category = str(category or "General").strip()
         final_offer = str(offer_text or "").strip()
@@ -940,10 +1006,10 @@ async def vendor_add_product(vendor_id: str = Form("ANAMU7028"), name: str = For
         else:
             image_url = f"https://images.unsplash.com/photo-1542838132-92c53300491e?w=500"
         if not final_offer and final_discount: final_offer = f"{int(final_discount)}% OFF"
-        new_product = Product(name=final_name, price=final_price, original_price=float(original_price or final_price), discount=final_discount, offer_text=final_offer, stock=int(stock), image=image_url, category=final_category, vendor_id=vendor_id, description=final_desc)
+        new_product = Product(name=final_name, price=final_price, original_price=float(original_price or final_price), discount=final_discount, offer_text=final_offer, stock=int(stock), image=image_url, category=final_category, vendor_id=vendor_id, description=final_desc, store_id=final_store_id)
         db.add(new_product); db.commit(); db.refresh(new_product)
-        print(f"✅ PRODUCT ADDED: {final_name} - ₹{final_price} - {final_category} - {vendor_id} - Desc: {final_desc[:50]}")
-        return {"success": True, "product_id": new_product.id, "message": "Product Added", "image": image_url}
+        print(f"✅ PRODUCT ADDED: {final_name} - ₹{final_price} - {final_category} - {vendor_id} - Store:{final_store_id} - Desc: {final_desc[:50]}")
+        return {"success": True, "product_id": new_product.id, "message": "Product Added", "image": image_url, "store_id": final_store_id, "vendor_id": vendor_id}
     except Exception as e:
         db.rollback()
         import traceback; traceback.print_exc()
@@ -1040,6 +1106,11 @@ def migrate_vendor(old_id: str, new_id: str):
         prods = db.query(Product).filter(Product.vendor_id == old_id).all()
         for p in prods:
             p.vendor_id = new_id
+            # ✅ Store bhi fix karo
+            if not p.store_id:
+                v = db.query(Vendor).filter(Vendor.id == new_id).first()
+                if v and v.store_id:
+                    p.store_id = v.store_id
         old_v = db.query(Vendor).filter(Vendor.id == old_id).first()
         new_v = db.query(Vendor).filter(Vendor.id == new_id).first()
         if old_v and not new_v:

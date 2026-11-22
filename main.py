@@ -61,7 +61,6 @@ Base = declarative_base()
 app = FastAPI(title="BazarHaat Backend v4 Final", version="4.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
-# ✅ FIX 4 - UPLOAD upar le aaya, warna neeche use karne par crash hota tha
 UPLOAD_BASE = "/tmp/uploads" if os.path.exists("/tmp") and os.access("/tmp", os.W_OK) else "uploads"
 os.makedirs(os.path.join(UPLOAD_BASE, "riders"), exist_ok=True)
 os.makedirs(os.path.join(UPLOAD_BASE, "products"), exist_ok=True)
@@ -70,7 +69,7 @@ UPLOAD_PRODUCTS = os.path.join(UPLOAD_BASE, "products")
 
 def clean_phone(p: str) -> str:
     if not p: return ""
-    p = p.replace("+91","").replace(" ","").replace("-","").strip()
+    p = str(p).replace("+91","").replace(" ","").replace("-","").strip()
     return p[-10:] if len(p) >= 10 else p
 
 class Vendor(Base):
@@ -86,6 +85,8 @@ class Vendor(Base):
     isActive = Column(Boolean, default=True)
     status = Column(String, default="pending")
     categories = Column(String, default="General")
+    password = Column(String, default="")
+    store_id = Column(String, default="")
     created_at = Column(DateTime, default=datetime.now)
 
 class Product(Base):
@@ -104,13 +105,12 @@ class Rider(Base):
     earning = Column(Float, default=0.0); photo_url = Column(String, default=""); rc_url = Column(String, default="")
     license_url = Column(String, default=""); aadhaar_url = Column(String, default="")
 
-# ✅ FIX 1 - Order class wapas laaya + 2 OTP column add kiye
 class Order(Base):
     __tablename__ = "orders"
     id = Column(String, primary_key=True)
-    otp = Column(String) # Purana - backup
-    delivery_otp = Column(String) # ✅ Sirf Customer ka
-    pickup_otp = Column(String) # ✅ Sirf Vendor + Rider ka
+    otp = Column(String)
+    delivery_otp = Column(String)
+    pickup_otp = Column(String)
     store_qr = Column(String)
     amount = Column(Float)
     customer = Column(String)
@@ -178,10 +178,11 @@ try:
             "ALTER TABLE vendors ADD COLUMN status VARCHAR DEFAULT 'pending'",
             "ALTER TABLE vendors ADD COLUMN categories VARCHAR DEFAULT 'General'",
             "ALTER TABLE vendors ADD COLUMN created_at TIMESTAMP DEFAULT NOW()",
+            "ALTER TABLE vendors ADD COLUMN password VARCHAR DEFAULT ''",
+            "ALTER TABLE vendors ADD COLUMN store_id VARCHAR DEFAULT ''",
             "ALTER TABLE orders ADD COLUMN items TEXT DEFAULT '[]'",
             "ALTER TABLE orders ADD COLUMN payment_method VARCHAR DEFAULT 'COD'",
             "ALTER TABLE orders ADD COLUMN total_items INTEGER DEFAULT 1",
-            # ✅ NEW - 2 OTP columns ke liye migration
             "ALTER TABLE orders ADD COLUMN delivery_otp VARCHAR DEFAULT ''",
             "ALTER TABLE orders ADD COLUMN pickup_otp VARCHAR DEFAULT ''",
         ]
@@ -353,7 +354,6 @@ def verify_customer_otp(req: CustomerVerifyRequest):
         return {"success": True, "customer": {"id": customer.id, "phone": customer.phone, "name": customer.name, "town": customer.town or "Hatidhura", "pincode": customer.pincode or "783332", "address": customer.address or ""}, "token": f"token_{customer.id}_{int(time.time())}"}
     finally: db.close()
 
-# ✅ FIX - Customer ka Delivery OTP alag se banega, Pickup OTP khaali rahega
 @app.post("/api/customer/place-order")
 def customer_place_order(req: PlaceOrderRequest):
     phone = clean_phone(req.phone)
@@ -372,7 +372,7 @@ def customer_place_order(req: PlaceOrderRequest):
             elif first_item.get("vendorId"):
                 vendor_id = str(first_item["vendorId"]).strip()
         order_id = f"BH-{random.randint(100,999)}-{uuid.uuid4().hex[:3].upper()}"
-        delivery_otp = str(random.randint(1000,9999)) # e.g. 7812 - Sirf Customer ko
+        delivery_otp = str(random.randint(1000,9999))
         total = req.total or sum([float(i.get('price',0))*int(i.get('qty',1) if 'qty' in i else 1) for i in req.cart])
         new_order = Order(
             id=order_id, otp=delivery_otp, delivery_otp=delivery_otp, pickup_otp="", store_qr=f"STORE-{order_id}",
@@ -435,33 +435,77 @@ def get_rider_location(order_id: str):
 @app.get("/api/vendors")
 def get_vendors(): db=SessionLocal(); v=db.query(Vendor).all(); db.close(); return v
 
+# ✅ FIXED - Flutter App se jo bhi naam aaye, sab chalega
 class VendorRegisterRequest(BaseModel):
-    name: str
+    storeId: Optional[str] = ""
+    store_id: Optional[str] = ""
+    ownerName: Optional[str] = ""
     owner: Optional[str] = ""
-    phone: str
-    city: str
+    name: Optional[str] = ""
+    mobile: Optional[str] = ""
+    phone: Optional[str] = ""
+    password: Optional[str] = ""
+    userId: Optional[str] = ""
+    user_id: Optional[str] = ""
+    city: Optional[str] = "Hatidhura"
     address: Optional[str] = ""
     categories: Optional[List[str]] = []
+
+class VendorLoginRequest(BaseModel):
+    userId: Optional[str] = ""
+    user_id: Optional[str] = ""
+    vendorId: Optional[str] = ""
+    mobile: Optional[str] = ""
+    phone: Optional[str] = ""
+    password: Optional[str] = ""
+    userName: Optional[str] = ""
 
 @app.post("/api/vendor/register")
 def vendor_register(req: VendorRegisterRequest):
     db = SessionLocal()
     try:
-        phone = clean_phone(req.phone)
+        phone = clean_phone(req.mobile or req.phone or "")
+        owner_name = req.ownerName or req.owner or req.name or ""
+        store_name = req.name or owner_name or "BazarHaat Store"
+        user_id = req.userId or req.user_id or ""
+        store_id = req.storeId or req.store_id or ""
+        pwd = req.password or ""
         if len(phone) != 10:
-            raise HTTPException(status_code=400, detail="Invalid phone")
+            raise HTTPException(status_code=400, detail="Invalid phone - 10 digit chahiye")
         existing = db.query(Vendor).filter(Vendor.phone == phone).first()
         if existing:
-            return {"success": True, "vendorId": existing.id, "status": existing.status, "message": "Already exists"}
-        vendor_id = f"VENDOR-{int(time.time())}"
-        new_vendor = Vendor(id=vendor_id, name=req.name, owner=req.owner or req.name, phone=phone, address=req.address, city=req.city, categories=",".join(req.categories) if req.categories else "General", status="pending", isOnline=False, isActive=True, orders=0)
+            return {"success": True, "vendorId": existing.id, "vendor_id": existing.id, "userId": existing.id, "status": existing.status, "message": "Already exists"}
+        vendor_id = user_id if user_id else f"VENDOR-{int(time.time())}"
+        new_vendor = Vendor(id=vendor_id, name=store_name, owner=owner_name, phone=phone, address=req.address or "", city=req.city or "Hatidhura", categories=",".join(req.categories) if req.categories else "General", status="pending", isOnline=False, isActive=True, orders=0, password=pwd, store_id=store_id)
         db.add(new_vendor); db.commit()
-        print(f"✅ NEW VENDOR REGISTER: {vendor_id} - {req.name} - {req.city} - {req.categories} - PENDING")
-        return {"success": True, "vendorId": vendor_id, "status": "pending"}
+        print(f"✅ NEW VENDOR REGISTER: {vendor_id} - {owner_name} - {phone} - Store:{store_id} - PENDING")
+        return {"success": True, "vendorId": vendor_id, "vendor_id": vendor_id, "userId": vendor_id, "status": "pending", "message": "Account Created - Pending Approval"}
+    except HTTPException as he:
+        raise he
     except Exception as e:
         db.rollback()
         print(f"❌ Vendor register error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.post("/api/vendor/login")
+def vendor_login(req: VendorLoginRequest):
+    db = SessionLocal()
+    try:
+        uid = (req.userId or req.user_id or req.vendorId or req.userName or "").strip()
+        phone = clean_phone(req.mobile or req.phone or "")
+        pwd = req.password or ""
+        v = None
+        if uid:
+            v = db.query(Vendor).filter(Vendor.id == uid).first()
+        if not v and phone:
+            v = db.query(Vendor).filter(Vendor.phone == phone).first()
+        if not v:
+            raise HTTPException(status_code=404, detail="User ID not found - Pehle Create Account karo")
+        if v.password and pwd and v.password != pwd:
+            raise HTTPException(status_code=401, detail="Wrong Password")
+        return {"success": True, "vendorId": v.id, "vendor_id": v.id, "userId": v.id, "vendor": {"userId": v.id, "vendorId": v.id, "ownerName": v.owner, "owner": v.owner, "name": v.name, "phone": v.phone, "mobile": v.phone, "city": v.city, "address": v.address, "status": v.status}, "store": {"id": v.store_id or "", "storeId": v.store_id or "", "name": v.name, "address": v.address}, "storeIds": [v.store_id] if v.store_id else [v.id], "status": v.status}
     finally:
         db.close()
 
@@ -513,7 +557,6 @@ def get_products(category: Optional[str]=None):
 @app.get("/api/vendor/products/{vendor_id}")
 def get_vendor_products(vendor_id: str): db=SessionLocal(); p=db.query(Product).filter(Product.vendor_id==vendor_id).all(); db.close(); return p
 
-# ✅ FIX 3 - Vendor ko Delivery OTP kabhi nahi bhejenge, sirf Pickup OTP
 @app.get("/api/vendor/orders/{vendor_id}")
 def get_vendor_orders(vendor_id: str):
     vendor_id = vendor_id.strip()
@@ -534,9 +577,9 @@ def get_vendor_orders(vendor_id: str):
             result.append({
                 "id": o.id, "orderId": o.id, "customer": o.customer, "customerName": o.customer,
                 "amount": o.amount, "total": o.amount,
-                "otp": o.pickup_otp or "", # ✅ Vendor ko sirf Pickup OTP
+                "otp": o.pickup_otp or "",
                 "pickup_otp": o.pickup_otp or "",
-                "delivery_otp": "", # ✅ Vendor ko kabhi mat bhejo
+                "delivery_otp": "",
                 "store_qr": o.store_qr, "status": o.status, "address": o.address,
                 "customer_phone": o.customer_phone, "phone": o.phone,
                 "items": items_list, "total_items": o.total_items or len(items_list),
@@ -560,7 +603,6 @@ def vendor_stats(vendor_id: str):
     finally:
         db.close()
 
-# ✅ FIX - Accept karte hi Pickup OTP banega
 @app.post("/api/vendor/orders/{order_id}/accept")
 def vendor_accept_order(order_id: str):
     order_id = order_id.strip()
@@ -569,15 +611,11 @@ def vendor_accept_order(order_id: str):
         o = db.query(Order).filter(Order.id == order_id).first()
         if not o:
             raise HTTPException(status_code=404, detail="Order not found")
-        
-        pickup_otp = str(random.randint(1000,9999)) # e.g. 4048
+        pickup_otp = str(random.randint(1000,9999))
         o.status = "Accepted_by_Vendor"
         o.pickup_otp = pickup_otp
         db.commit()
-
-        # ✅ Rider ko Notification - Yahi tum bol rahe ho
         print(f"🔔 NOTIFICATION to Rider: Order {order_id} Ready! Pickup OTP {pickup_otp} - Dukaan par jaake verify karo")
-
         return {"success": True, "order_id": order_id, "status": "Accepted_by_Vendor", "pickup_otp": pickup_otp}
     except Exception as e:
         db.rollback()
@@ -586,7 +624,6 @@ def vendor_accept_order(order_id: str):
     finally:
         db.close()
 
-# Rider App ye API maar kar apna Pickup OTP lega - Notification ke liye
 @app.get("/api/rider/pickup-otp/{order_id}")
 def get_pickup_otp_for_rider(order_id: str):
     db = SessionLocal()
@@ -594,7 +631,6 @@ def get_pickup_otp_for_rider(order_id: str):
         o = db.query(Order).filter(Order.id == order_id).first()
         if not o:
             raise HTTPException(status_code=404, detail="Order not found")
-        # Sirf tab milega jab Vendor ne Accept kar liya ho
         if o.status in ["New"]:
             return {"success": False, "message": "Vendor ne abhi Accept nahi kiya"}
         return {"success": True, "order_id": order_id, "pickup_otp": o.pickup_otp, "message": f"Vendor ne Accept kiya - Pickup OTP {o.pickup_otp}"}
@@ -632,23 +668,7 @@ def get_rider_available_orders():
     db = SessionLocal()
     try:
         orders = db.query(Order).filter(Order.status.in_(["New","Accepted_by_Vendor","Assigned","Picked Up","Picked_by_Rider","Accepted_by_Rider"])).order_by(Order.created_at.desc()).all()
-        return [
-            {
-                "id": o.id, 
-                "customer": o.customer, 
-                "amount": o.amount, 
-                "otp": "", 
-                "pickup_otp": "",
-                "delivery_otp": "",
-                "store_qr": o.store_qr, 
-                "status": o.status, 
-                "address": o.address,
-                "customer_phone": o.customer_phone,
-                "vendor_id": o.vendor_id,
-                "rider_id": o.rider_id
-            } 
-            for o in orders
-        ]
+        return [{"id": o.id, "customer": o.customer, "amount": o.amount, "otp": "", "pickup_otp": "", "delivery_otp": "", "store_qr": o.store_qr, "status": o.status, "address": o.address, "customer_phone": o.customer_phone, "vendor_id": o.vendor_id, "rider_id": o.rider_id} for o in orders]
     finally:
         db.close()
 @app.post("/api/rider/orders/{order_id}/accept")
@@ -664,7 +684,6 @@ def rider_accept_order(order_id: str, data: dict):
     finally:
         db.close()
 
-# ✅ FIX - Delivery me Customer wala OTP check hoga
 @app.post("/api/rider/orders/{order_id}/deliver")
 def rider_deliver_order(order_id: str, data: dict):
     db=SessionLocal()
@@ -822,8 +841,6 @@ def rider_notify(order_id: str, data: dict = {}):
     print(f"🔔 Rider Notify for {order_id} - {data}")
     return {"success": True, "order_id": order_id, "message": "Riders notified"}
 
-# ✅ FIX 2 - Ab Pickup OTP check hoga, STORE- nahi
-# ✅ FIX 2 - Ab Pickup OTP check hoga, STORE- nahi
 @app.post("/api/rider/verify-pickup")
 def verify_pickup(data: dict):
     db = SessionLocal()
@@ -856,13 +873,12 @@ def verify_pickup(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
-# Alias - Rider App agar purana URL mare to bhi chale
+
 @app.post("/api/rider/orders/{order_id}/verify-qr")
 def verify_qr_alias(order_id: str, data: dict):
     data["order_id"] = order_id
     return verify_pickup(data)
 
-# Purane order ko 1 baar fix karne ke liye
 @app.get("/api/admin/fix-order/{order_id}/{new_otp}")
 def fix_old_order(order_id: str, new_otp: str):
     db = SessionLocal()

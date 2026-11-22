@@ -58,7 +58,7 @@ else:
 
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
-app = FastAPI(title="BazarHaat Backend v6 Final - ANAMU7028", version="6.0.0")
+app = FastAPI(title="BazarHaat Backend v7 Final - ANAMU7028 - STORES FIXED", version="7.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 UPLOAD_BASE = "/tmp/uploads" if os.path.exists("/tmp") and os.access("/tmp", os.W_OK) else "uploads"
@@ -67,7 +67,6 @@ os.makedirs(os.path.join(UPLOAD_BASE, "products"), exist_ok=True)
 UPLOAD_RIDERS = os.path.join(UPLOAD_BASE, "riders")
 UPLOAD_PRODUCTS = os.path.join(UPLOAD_BASE, "products")
 
-# ✅ MAIN VENDOR - Ab sab isi me aayega
 MAIN_VENDOR = "ANAMU7028"
 OLD_VENDOR = "VENDOR-1793297620"
 
@@ -262,7 +261,38 @@ class ApproveRiderRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"message": "BazarHaat Backend v6 Final - ANAMU7028", "status": "OK"}
+    return {"message": "BazarHaat Backend v7 Final - ANAMU7028 - STORES FIXED", "status": "OK"}
+
+# ✅ ✅ ✅ STORES FIX - YEHI THA 404 WALA ERROR ✅ ✅ ✅
+@app.get("/api/stores")
+def get_stores():
+    db = SessionLocal()
+    try:
+        all_v = db.query(Vendor).all()
+        return [{"id": v.id, "storeId": v.store_id or v.id, "store_id": v.store_id or v.id, "vendorId": v.id, "vendor_id": v.id, "name": v.name, "owner": v.owner, "ownerName": v.owner, "phone": v.phone, "city": v.city, "address": v.address, "status": v.status, "categories": v.categories, "isOnline": v.isOnline, "isActive": v.isActive} for v in all_v]
+    finally:
+        db.close()
+
+@app.get("/api/store/{store_id}")
+def get_store_by_id(store_id: str):
+    db = SessionLocal()
+    try:
+        v = db.query(Vendor).filter(Vendor.id == store_id).first()
+        if not v:
+            v = db.query(Vendor).filter(Vendor.store_id == store_id).first()
+        if not v:
+            raise HTTPException(status_code=404, detail="Store not found")
+        return {"id": v.id, "storeId": v.store_id or v.id, "vendorId": v.id, "name": v.name, "owner": v.owner, "phone": v.phone, "city": v.city, "address": v.address, "status": v.status, "categories": v.categories}
+    finally:
+        db.close()
+
+@app.get("/api/app-status")
+def app_status():
+    return {"isUserAppLive": True, "isVendorAppLive": True, "isRiderAppLive": True, "status": "OK", "main_vendor": MAIN_VENDOR}
+
+@app.get("/api/status")
+def status_api():
+    return {"status": "OK", "message": "BazarHaat Backend Live"}
 
 @app.post("/api/rider/auth/firebase-verify")
 def firebase_verify_rider(req: FirebaseVerifyRequest):
@@ -398,7 +428,6 @@ def customer_place_order(req: PlaceOrderRequest):
         real_name = req.customerName or req.customer_name or req.name or customer.name or "Customer"
         if real_name in ["", "User", "user"]:
             real_name = customer.name
-        # ✅ FIX - Agar Vendor ID purana hai to naye me daalo, warna naye me hi
         vendor_id = MAIN_VENDOR
         if req.vendor_id and req.vendor_id.strip() not in ["", OLD_VENDOR]:
             vendor_id = str(req.vendor_id).strip()
@@ -449,7 +478,6 @@ def place_order_generic(req: OrderItemRequest):
         total = req.total or 0
         if total == 0 and req.items:
             total = sum([float(i.get('price',0)) * int(i.get('qty',1) if 'qty' in i else i.get('quantity',1)) for i in req.items])
-        # ✅ FIX - Purana ID aaye to naye me daalo
         vendor_id = req.vendor_id or MAIN_VENDOR
         if vendor_id == OLD_VENDOR:
             vendor_id = MAIN_VENDOR
@@ -613,7 +641,6 @@ def get_vendor_products(vendor_id: str):
     db=SessionLocal()
     try:
         p=db.query(Product).filter(Product.vendor_id==vendor_id).all()
-        # ✅ Agar naye ID me 0 hai to purane wale ka bhi dikhao - Transfer se pehle ke liye
         if not p and vendor_id != OLD_VENDOR:
             p=db.query(Product).filter(Product.vendor_id==OLD_VENDOR).all()
         return p
@@ -1003,7 +1030,6 @@ def fix_all_orders():
     finally:
         db.close()
 
-# ✅ TRANSFER - Purana Vendor ID ka saara data Naye ID me
 @app.get("/api/admin/migrate-vendor/{old_id}/{new_id}")
 def migrate_vendor(old_id: str, new_id: str):
     db = SessionLocal()
@@ -1014,7 +1040,6 @@ def migrate_vendor(old_id: str, new_id: str):
         prods = db.query(Product).filter(Product.vendor_id == old_id).all()
         for p in prods:
             p.vendor_id = new_id
-        # ✅ Vendor ka record bhi copy karo agar naya wala nahi hai
         old_v = db.query(Vendor).filter(Vendor.id == old_id).first()
         new_v = db.query(Vendor).filter(Vendor.id == new_id).first()
         if old_v and not new_v:
@@ -1030,7 +1055,6 @@ def migrate_vendor(old_id: str, new_id: str):
     finally:
         db.close()
 
-# ✅ Ek hi click me purana -> ANAMU7028 transfer
 @app.get("/api/admin/migrate-to-anamu")
 def migrate_to_anamu():
     return migrate_vendor(OLD_VENDOR, MAIN_VENDOR)

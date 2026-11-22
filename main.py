@@ -3,10 +3,10 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, date
 import json 
 import uvicorn, uuid, shutil, random, time, os
-from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, text
+from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, text, func
 from sqlalchemy.orm import declarative_base, sessionmaker
 from urllib.parse import quote_plus
 
@@ -58,7 +58,7 @@ else:
 
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
-app = FastAPI(title="BazarHaat Backend v7 Final - ANAMU7028 - STORES FIXED", version="7.0.0")
+app = FastAPI(title="BazarHaat Backend v7 Final - ANAMU7028 - STORES FIXED - FAST", version="7.0.1")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 UPLOAD_BASE = "/tmp/uploads" if os.path.exists("/tmp") and os.access("/tmp", os.W_OK) else "uploads"
@@ -69,6 +69,7 @@ UPLOAD_PRODUCTS = os.path.join(UPLOAD_BASE, "products")
 
 MAIN_VENDOR = "ANAMU7028"
 OLD_VENDOR = "VENDOR-1793297620"
+DEFAULT_IMG = "https://images.unsplash.com/photo-1542838132-92c53300491e?w=500"
 
 def clean_phone(p: str) -> str:
     if not p: return ""
@@ -78,35 +79,22 @@ def clean_phone(p: str) -> str:
 def product_to_dict(p):
     return {"id": p.id, "name": p.name, "price": p.price, "original_price": p.original_price, "discount": p.discount, "offer_text": p.offer_text or "", "stock": p.stock, "image": p.image, "imageUrl": p.image, "category": p.category, "vendor_id": p.vendor_id, "vendorId": p.vendor_id, "store_id": getattr(p, "store_id", "") or "", "storeId": getattr(p, "store_id", "") or "", "description": p.description or ""}
 
+# ✅ FAST - Koi DB Query nahi! Sirf Image / Name fix karega!
 def fix_item_image(item: dict, db=None):
     it = dict(item)
     img = it.get("image") or it.get("imageUrl") or it.get("image_url") or it.get("img") or it.get("photo") or ""
-    if not img and db is not None:
-        try:
-            name = str(it.get("name") or it.get("productName") or it.get("title") or "").strip()
-            if name:
-                prod = db.query(Product).filter(Product.name.ilike(f"%{name}%")).first()
-                if prod and prod.image:
-                    img = prod.image
-        except: pass
     if not img:
-        img = "https://images.unsplash.com/photo-1542838132-92c53300491e?w=500"
+        img = DEFAULT_IMG
     it["image"] = img
     it["imageUrl"] = img
     if not it.get("name"):
         it["name"] = it.get("productName") or it.get("title") or "Product"
     if it.get("qty") is None:
         it["qty"] = it.get("quantity") or 1
-    # ✅ Vendor bhi fix karo - Item me vendor_id nahi hai to Product se lo
-    if not it.get("vendor_id") and not it.get("vendorId"):
-        try:
-            nm = str(it.get("name") or "").strip()
-            if nm and db is not None:
-                pr = db.query(Product).filter(Product.name.ilike(f"%{nm}%")).first()
-                if pr and pr.vendor_id:
-                    it["vendor_id"] = pr.vendor_id
-                    it["vendorId"] = pr.vendor_id
-        except: pass
+    if not it.get("vendor_id") and it.get("vendorId"):
+        it["vendor_id"] = it["vendorId"]
+    if not it.get("vendorId") and it.get("vendor_id"):
+        it["vendorId"] = it["vendor_id"]
     return it
 
 class Vendor(Base):
@@ -132,7 +120,7 @@ class Product(Base):
     original_price = Column(Float, nullable=True); discount = Column(Float, default=0); offer_text = Column(String, default="")
     stock = Column(Integer, default=100); image = Column(Text); category = Column(String, default="General"); vendor_id = Column(String)
     description = Column(Text, default="")
-    store_id = Column(String, default="")  # ✅ FIXED - Store ID Column add kiya!
+    store_id = Column(String, default="")
 
 class Rider(Base):
     __tablename__ = "riders"
@@ -276,7 +264,7 @@ class ApproveRiderRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"message": "BazarHaat Backend v7 Final - ANAMU7028 - STORES FIXED", "status": "OK"}
+    return {"message": "BazarHaat Backend v7 Final - FAST", "status": "OK"}
 
 @app.get("/api/stores")
 def get_stores():
@@ -438,11 +426,9 @@ def customer_place_order(req: PlaceOrderRequest):
             cust_name = req.customerName or req.customer_name or req.name or "Customer"
             customer = Customer(id=f"CUST-{uuid.uuid4().hex[:6].upper()}", phone=phone, name=cust_name, town=req.town or "Hatidhura", address=req.address or "", pincode=req.pincode or "783332")
             db.add(customer); db.commit(); db.refresh(customer)
-            print(f"✅ AUTO CUSTOMER CREATED: {phone} - {cust_name}")
         real_name = req.customerName or req.customer_name or req.name or customer.name or "Customer"
         if real_name in ["", "User", "user"]:
             real_name = customer.name
-        # ✅ FIXED - Raj ka Order Raj ko hi jayega!
         vendor_id = MAIN_VENDOR
         if req.vendor_id and req.vendor_id.strip() not in ["", OLD_VENDOR]:
             vendor_id = str(req.vendor_id).strip()
@@ -465,23 +451,14 @@ def customer_place_order(req: PlaceOrderRequest):
             full_address = f"{full_address} - {pincode}"
         if not full_address:
             full_address = f"{town} - {pincode}"
-        fixed_cart = [fix_item_image(it, db) for it in (req.cart or [])]
-        # ✅ Har Item me vendor_id pakka karo
+        fixed_cart = [fix_item_image(it, None) for it in (req.cart or [])]
         for it in fixed_cart:
             if not it.get("vendor_id"):
                 it["vendor_id"] = vendor_id
                 it["vendorId"] = vendor_id
-        new_order = Order(
-            id=order_id, otp=delivery_otp, delivery_otp=delivery_otp, pickup_otp="", store_qr=f"STORE-{order_id}",
-            amount=total, customer=real_name, customer_phone=phone,
-            phone=phone, address=full_address,
-            status="New", earning=45, vendor_id=vendor_id,
-            items=json.dumps(fixed_cart),
-            payment_method=req.payment_id or "COD",
-            total_items=len(fixed_cart)
-        )
+        new_order = Order(id=order_id, otp=delivery_otp, delivery_otp=delivery_otp, pickup_otp="", store_qr=f"STORE-{order_id}", amount=total, customer=real_name, customer_phone=phone, phone=phone, address=full_address, status="New", earning=45, vendor_id=vendor_id, items=json.dumps(fixed_cart), payment_method=req.payment_id or "COD", total_items=len(fixed_cart))
         db.add(new_order); db.commit()
-        print(f"🛒 NEW ORDER {order_id} -> Vendor {vendor_id} - {real_name} - {full_address} - ₹{total} - Delivery OTP {delivery_otp}")
+        print(f"🛒 NEW ORDER {order_id} -> Vendor {vendor_id} - {real_name} - ₹{total}")
         return {"success": True, "id": order_id, "order_id": order_id, "otp": delivery_otp, "delivery_otp": delivery_otp, "vendor_id": vendor_id, "customer": real_name, "address": full_address}
     finally:
         db.close()
@@ -508,20 +485,12 @@ def place_order_generic(req: OrderItemRequest):
         if (not real_name or real_name in ["User", "Customer"]) and cust:
             real_name = cust.name
         full_address = req.address or (cust.address if cust else "") or "Hatidhura - 783332"
-        fixed_items = [fix_item_image(it, db) for it in (req.items or [])]
+        fixed_items = [fix_item_image(it, None) for it in (req.items or [])]
         for it in fixed_items:
             if not it.get("vendor_id"):
                 it["vendor_id"] = vendor_id
-        new_order = Order(
-            id=order_id, otp=delivery_otp, delivery_otp=delivery_otp, pickup_otp="", store_qr=f"STORE-{order_id}", amount=total,
-            customer=real_name, customer_phone=phone, phone=phone,
-            address=full_address, status="New", earning=45, vendor_id=vendor_id,
-            items=json.dumps(fixed_items),
-            payment_method="COD",
-            total_items=len(fixed_items)
-        )
+        new_order = Order(id=order_id, otp=delivery_otp, delivery_otp=delivery_otp, pickup_otp="", store_qr=f"STORE-{order_id}", amount=total, customer=real_name, customer_phone=phone, phone=phone, address=full_address, status="New", earning=45, vendor_id=vendor_id, items=json.dumps(fixed_items), payment_method="COD", total_items=len(fixed_items))
         db.add(new_order); db.commit()
-        print(f"🛒 NEW ORDER via /api/orders {order_id} - {real_name} - ₹{total} - Vendor: {vendor_id} - Delivery OTP {delivery_otp}")
         return {"success": True, "id": order_id, "order_id": order_id, "otp": delivery_otp, "delivery_otp": delivery_otp, "total": total, "vendor_id": vendor_id}
     except Exception as e:
         db.rollback()
@@ -590,7 +559,6 @@ def vendor_register(req: VendorRegisterRequest):
         vendor_id = user_id if user_id else f"VENDOR-{int(time.time())}"
         new_vendor = Vendor(id=vendor_id, name=store_name, owner=owner_name, phone=phone, address=req.address or "", city=req.city or "Hatidhura", categories=",".join(req.categories) if req.categories else "General", status="pending", isOnline=False, isActive=True, orders=0, password=pwd, store_id=store_id)
         db.add(new_vendor); db.commit()
-        print(f"✅ NEW VENDOR REGISTER: {vendor_id} - {owner_name} - {phone} - Store:{store_id} - PENDING")
         return {"success": True, "vendorId": vendor_id, "vendor_id": vendor_id, "userId": vendor_id, "status": "pending", "message": "Account Created - Pending Approval"}
     except HTTPException as he:
         raise he
@@ -644,7 +612,6 @@ def vendor_approve(vendor_id: str):
             raise HTTPException(status_code=404, detail="Vendor not found")
         v.status = "approved"; v.isOnline = True; v.isActive = True
         db.commit()
-        print(f"✅ VENDOR APPROVED: {vendor_id}")
         return {"success": True, "vendorId": vendor_id, "status": "approved"}
     finally:
         db.close()
@@ -669,26 +636,23 @@ def get_products(category: Optional[str]=None, vendor_id: Optional[str]=None, st
             q = q.filter(Product.store_id==store_id)
         if category and category!="All":
             q = q.filter(Product.category.ilike(f"%{category}%"))
-        return [product_to_dict(p) for p in q.all()]
+        return [product_to_dict(p) for p in q.limit(200).all()]
     finally: db.close()
 
-# ✅ FIXED - Fallback SIRF ANAMU7028 ke liye, Raj ke liye NAHI!
 @app.get("/api/vendor/products/{vendor_id}")
 def get_vendor_products(vendor_id: str):
     db=SessionLocal()
     try:
         vendor_id = vendor_id.strip()
-        # OLD ID aaye to MAIN me convert karo
         if vendor_id == OLD_VENDOR:
             vendor_id = MAIN_VENDOR
-        p = db.query(Product).filter(Product.vendor_id==vendor_id).all()
-        # ✅ Sirf MAIN_VENDOR ko Old Product dikhao - Raj ko nahi!
+        p = db.query(Product).filter(Product.vendor_id==vendor_id).limit(200).all()
         if not p and vendor_id == MAIN_VENDOR:
-            p = db.query(Product).filter(Product.vendor_id==OLD_VENDOR).all()
+            p = db.query(Product).filter(Product.vendor_id==OLD_VENDOR).limit(200).all()
         return [product_to_dict(x) for x in p]
     finally: db.close()
 
-# ✅ FIXED - Fallback SIRF ANAMU7028 ke liye!
+# ✅ FAST - limit(50) + No DB Query in fix_item_image!
 @app.get("/api/vendor/orders/{vendor_id}")
 def get_vendor_orders(vendor_id: str):
     vendor_id = vendor_id.strip()
@@ -696,10 +660,9 @@ def get_vendor_orders(vendor_id: str):
         vendor_id = MAIN_VENDOR
     db = SessionLocal()
     try:
-        orders = db.query(Order).filter(Order.vendor_id == vendor_id).order_by(Order.created_at.desc()).all()
-        # ✅ Sirf MAIN_VENDOR ko Old Order dikhao!
+        orders = db.query(Order).filter(Order.vendor_id == vendor_id).order_by(Order.created_at.desc()).limit(50).all()
         if not orders and vendor_id == MAIN_VENDOR:
-            orders = db.query(Order).filter(Order.vendor_id == OLD_VENDOR).order_by(Order.created_at.desc()).all()
+            orders = db.query(Order).filter(Order.vendor_id == OLD_VENDOR).order_by(Order.created_at.desc()).limit(50).all()
         result = []
         for o in orders:
             try:
@@ -708,25 +671,13 @@ def get_vendor_orders(vendor_id: str):
                 if not isinstance(items_list, list): items_list = []
             except:
                 items_list = []
-            items_list = [fix_item_image(it, db) for it in items_list]
-            result.append({
-                "id": o.id, "orderId": o.id, "customer": o.customer, "customerName": o.customer,
-                "amount": o.amount, "total": o.amount,
-                "otp": o.delivery_otp or o.otp or "",
-                "pickup_otp": o.pickup_otp or "",
-                "delivery_otp": o.delivery_otp or o.otp or "",
-                "store_qr": o.store_qr, "status": o.status, "address": o.address,
-                "customer_phone": o.customer_phone, "phone": o.phone,
-                "items": items_list, "total_items": o.total_items or len(items_list),
-                "payment_method": o.payment_method or "COD",
-                "created_at": o.created_at.isoformat() if o.created_at else "",
-                "vendor_id": o.vendor_id
-            })
+            items_list = [fix_item_image(it, None) for it in items_list]
+            result.append({"id": o.id, "orderId": o.id, "customer": o.customer, "customerName": o.customer, "amount": o.amount, "total": o.amount, "otp": o.delivery_otp or o.otp or "", "pickup_otp": o.pickup_otp or "", "delivery_otp": o.delivery_otp or o.otp or "", "store_qr": o.store_qr, "status": o.status, "address": o.address, "customer_phone": o.customer_phone, "phone": o.phone, "items": items_list, "total_items": o.total_items or len(items_list), "payment_method": o.payment_method or "COD", "created_at": o.created_at.isoformat() if o.created_at else "", "vendor_id": o.vendor_id})
         return result
     finally:
         db.close()
 
-# ✅ FIXED - Fallback SIRF ANAMU7028 ke liye!
+# ✅ FAST - DB hi count / sum karega, Python nahi!
 @app.get("/api/vendor/stats/{vendor_id}")
 def vendor_stats(vendor_id: str):
     vendor_id = vendor_id.strip()
@@ -734,14 +685,21 @@ def vendor_stats(vendor_id: str):
         vendor_id = MAIN_VENDOR
     db = SessionLocal()
     try:
-        pc = db.query(Product).filter(Product.vendor_id == vendor_id).count()
-        orders = db.query(Order).filter(Order.vendor_id == vendor_id).all()
-        if not orders and vendor_id == MAIN_VENDOR:
-            orders = db.query(Order).filter(Order.vendor_id == OLD_VENDOR).all()
-            pc = db.query(Product).filter(Product.vendor_id == OLD_VENDOR).count()
-        today = datetime.now().date()
-        today_orders = [o for o in orders if o.created_at and o.created_at.date() == today]
-        return {"product_count": pc, "total_orders": len(orders), "new_orders": len([o for o in orders if o.status == "New"]), "pending_orders": len([o for o in orders if o.status == "New"]), "today_income": sum([o.amount or 0 for o in today_orders]), "today_orders": len(today_orders), "total_income": sum([o.amount or 0 for o in orders]), "earnings": sum([o.amount or 0 for o in orders if o.status == "Delivered"]), "vendor_id": vendor_id, "rating": 4.8}
+        # Agar MAIN_VENDOR ke paas 0 Order hai to OLD se gin lo
+        total_orders = db.query(func.count(Order.id)).filter(Order.vendor_id == vendor_id).scalar() or 0
+        if total_orders == 0 and vendor_id == MAIN_VENDOR:
+            vendor_id_for_stats = OLD_VENDOR
+            total_orders = db.query(func.count(Order.id)).filter(Order.vendor_id == OLD_VENDOR).scalar() or 0
+        else:
+            vendor_id_for_stats = vendor_id
+        pc = db.query(func.count(Product.id)).filter(Product.vendor_id == vendor_id_for_stats).scalar() or 0
+        new_orders = db.query(func.count(Order.id)).filter(Order.vendor_id == vendor_id_for_stats, Order.status == "New").scalar() or 0
+        total_income = db.query(func.coalesce(func.sum(Order.amount), 0)).filter(Order.vendor_id == vendor_id_for_stats).scalar() or 0
+        delivered_income = db.query(func.coalesce(func.sum(Order.amount), 0)).filter(Order.vendor_id == vendor_id_for_stats, Order.status == "Delivered").scalar() or 0
+        today_start = datetime.combine(date.today(), datetime.min.time())
+        today_orders = db.query(func.count(Order.id)).filter(Order.vendor_id == vendor_id_for_stats, Order.created_at >= today_start).scalar() or 0
+        today_income = db.query(func.coalesce(func.sum(Order.amount), 0)).filter(Order.vendor_id == vendor_id_for_stats, Order.created_at >= today_start).scalar() or 0
+        return {"product_count": int(pc), "total_orders": int(total_orders), "new_orders": int(new_orders), "pending_orders": int(new_orders), "today_income": float(today_income), "today_orders": int(today_orders), "total_income": float(total_income), "earnings": float(delivered_income), "vendor_id": vendor_id, "rating": 4.8}
     finally:
         db.close()
 
@@ -757,7 +715,6 @@ def vendor_accept_order(order_id: str):
         o.status = "Accepted_by_Vendor"
         o.pickup_otp = pickup_otp
         db.commit()
-        print(f"🔔 NOTIFICATION to Rider: Order {order_id} Ready! Pickup OTP {pickup_otp} - Dukaan par jaake verify karo")
         return {"success": True, "order_id": order_id, "status": "Accepted_by_Vendor", "pickup_otp": pickup_otp, "message": f"Rider ko bhej diya - Pickup OTP {pickup_otp}"}
     except Exception as e:
         db.rollback()
@@ -788,7 +745,6 @@ def vendor_reject_order(order_id: str):
         if not o:
             raise HTTPException(status_code=404, detail="Order not found")
         o.status = "Rejected_by_Vendor"; db.commit()
-        print(f"❌ Vendor Rejected {order_id}")
         return {"success": True}
     finally:
         db.close()
@@ -810,7 +766,7 @@ def vendor_masked_call(order_id: str):
 def get_rider_available_orders():
     db = SessionLocal()
     try:
-        orders = db.query(Order).filter(Order.status.in_(["New","Accepted_by_Vendor","Assigned","Picked Up","Picked_by_Rider","Accepted_by_Rider"])).order_by(Order.created_at.desc()).all()
+        orders = db.query(Order).filter(Order.status.in_(["New","Accepted_by_Vendor","Assigned","Picked Up","Picked_by_Rider","Accepted_by_Rider"])).order_by(Order.created_at.desc()).limit(50).all()
         result = []
         for o in orders:
             try:
@@ -819,18 +775,8 @@ def get_rider_available_orders():
                 if not isinstance(items_list, list): items_list = []
             except:
                 items_list = []
-            items_list = [fix_item_image(it, db) for it in items_list]
-            result.append({
-                "id": o.id, "orderId": o.id, "customer": o.customer, "customerName": o.customer,
-                "amount": o.amount, "total": o.amount,
-                "otp": o.delivery_otp or o.otp or "", "pickup_otp": o.pickup_otp or "", "delivery_otp": o.delivery_otp or o.otp or "",
-                "store_qr": o.store_qr, "status": o.status, "address": o.address,
-                "customer_phone": o.customer_phone, "phone": o.phone,
-                "vendor_id": o.vendor_id, "rider_id": o.rider_id,
-                "items": items_list, "total_items": o.total_items or len(items_list),
-                "payment_method": o.payment_method or "COD",
-                "created_at": o.created_at.isoformat() if o.created_at else ""
-            })
+            items_list = [fix_item_image(it, None) for it in items_list]
+            result.append({"id": o.id, "orderId": o.id, "customer": o.customer, "customerName": o.customer, "amount": o.amount, "total": o.amount, "otp": o.delivery_otp or o.otp or "", "pickup_otp": o.pickup_otp or "", "delivery_otp": o.delivery_otp or o.otp or "", "store_qr": o.store_qr, "status": o.status, "address": o.address, "customer_phone": o.customer_phone, "phone": o.phone, "vendor_id": o.vendor_id, "rider_id": o.rider_id, "items": items_list, "total_items": o.total_items or len(items_list), "payment_method": o.payment_method or "COD", "created_at": o.created_at.isoformat() if o.created_at else ""})
         return result
     finally:
         db.close()
@@ -864,7 +810,6 @@ def rider_deliver_order(order_id: str, data: dict):
                 r.earning = (r.earning or 0) + (o.earning or 45)
                 r.total_deliveries = (r.total_deliveries or 0) + 1
         db.commit()
-        print(f"✅ Delivered {order_id} - Rider earning +{o.earning}")
         return {"success":True}
     finally: db.close()
 
@@ -974,7 +919,6 @@ async def vendor_add_product(vendor_id: str = Form("ANAMU7028"), store_id: str =
             vendor_id = MAIN_VENDOR
         final_store_id = str(store_id or storeId or "").strip()
         if not final_store_id:
-            # Vendor ke Store se lo
             v = db.query(Vendor).filter(Vendor.id == vendor_id).first()
             if v and v.store_id:
                 final_store_id = v.store_id
@@ -995,7 +939,6 @@ async def vendor_add_product(vendor_id: str = Form("ANAMU7028"), store_id: str =
             try:
                 result = cloudinary.uploader.upload(upload_file.file, folder="bazarhaat_products")
                 image_url = result.get("secure_url")
-                print(f"📸 Cloudinary URL: {image_url}")
             except Exception as ce:
                 print(f"❌ Cloudinary error: {ce}")
                 safe_name = os.path.basename(upload_file.filename).replace(" ", "_")
@@ -1004,11 +947,11 @@ async def vendor_add_product(vendor_id: str = Form("ANAMU7028"), store_id: str =
                 with open(path, "wb") as buffer: shutil.copyfileobj(upload_file.file, buffer)
                 image_url = f"/uploads/products/{filename}"
         else:
-            image_url = f"https://images.unsplash.com/photo-1542838132-92c53300491e?w=500"
+            image_url = DEFAULT_IMG
         if not final_offer and final_discount: final_offer = f"{int(final_discount)}% OFF"
         new_product = Product(name=final_name, price=final_price, original_price=float(original_price or final_price), discount=final_discount, offer_text=final_offer, stock=int(stock), image=image_url, category=final_category, vendor_id=vendor_id, description=final_desc, store_id=final_store_id)
         db.add(new_product); db.commit(); db.refresh(new_product)
-        print(f"✅ PRODUCT ADDED: {final_name} - ₹{final_price} - {final_category} - {vendor_id} - Store:{final_store_id} - Desc: {final_desc[:50]}")
+        print(f"✅ PRODUCT ADDED: {final_name} - ₹{final_price} - {vendor_id} - Store:{final_store_id}")
         return {"success": True, "product_id": new_product.id, "message": "Product Added", "image": image_url, "store_id": final_store_id, "vendor_id": vendor_id}
     except Exception as e:
         db.rollback()
@@ -1030,14 +973,12 @@ def verify_pickup(data: dict):
         order_id = str(data.get("order_id") or data.get("orderId") or "").strip()
         entered = str(data.get("pickup_otp") or data.get("otp") or data.get("store_qr") or data.get("qr") or data.get("code") or "").strip()
         rider_id = str(data.get("rider_id") or "")
-        print(f"🔍 PICKUP VERIFY: order={order_id} entered={entered} rider={rider_id}")
         if not order_id or not entered:
             raise HTTPException(status_code=400, detail="order_id and pickup_otp required")
         o = db.query(Order).filter(Order.id == order_id).first()
         if not o:
             raise HTTPException(status_code=404, detail="Order not found")
         real = str(o.pickup_otp or "").strip()
-        print(f"REAL Pickup OTP={real} Status={o.status}")
         if not real:
             raise HTTPException(status_code=400, detail="Vendor ne abhi Accept nahi kiya - Pickup OTP nahi bana")
         if entered != real:
@@ -1045,7 +986,6 @@ def verify_pickup(data: dict):
         o.status = "Picked_by_Rider"
         if rider_id: o.rider_id = rider_id
         db.commit()
-        print(f"✅ PICKUP VERIFIED {order_id} by {rider_id}")
         return {"success": True, "order_id": order_id, "status": "Picked_by_Rider"}
     except HTTPException as he:
         raise he
@@ -1080,14 +1020,14 @@ def fix_old_order(order_id: str, new_otp: str):
 def fix_all_orders():
     db = SessionLocal()
     try:
-        orders = db.query(Order).all()
+        orders = db.query(Order).limit(200).all()
         fixed = 0
         for o in orders:
             try:
                 items = json.loads(o.items) if o.items else []
                 if isinstance(items, dict): items = [items]
                 if not isinstance(items, list): continue
-                new_items = [fix_item_image(it, db) for it in items]
+                new_items = [fix_item_image(it, None) for it in items]
                 o.items = json.dumps(new_items)
                 fixed += 1
             except: pass
@@ -1106,7 +1046,6 @@ def migrate_vendor(old_id: str, new_id: str):
         prods = db.query(Product).filter(Product.vendor_id == old_id).all()
         for p in prods:
             p.vendor_id = new_id
-            # ✅ Store bhi fix karo
             if not p.store_id:
                 v = db.query(Vendor).filter(Vendor.id == new_id).first()
                 if v and v.store_id:

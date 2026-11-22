@@ -16,7 +16,7 @@ class OrderItemRequest(BaseModel):
     phone: Optional[str] = None
     address: Optional[str] = ""
     total: Optional[float] = 0
-    vendor_id: Optional[str] = "VENDOR-1793297620"
+    vendor_id: Optional[str] = "ANAMU7028"
     items: Optional[List[dict]] = []
     otp: Optional[str] = None
 
@@ -58,7 +58,7 @@ else:
 
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
-app = FastAPI(title="BazarHaat Backend v5 Final - All Fixed", version="5.0.0")
+app = FastAPI(title="BazarHaat Backend v6 Final - ANAMU7028", version="6.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 UPLOAD_BASE = "/tmp/uploads" if os.path.exists("/tmp") and os.access("/tmp", os.W_OK) else "uploads"
@@ -67,17 +67,19 @@ os.makedirs(os.path.join(UPLOAD_BASE, "products"), exist_ok=True)
 UPLOAD_RIDERS = os.path.join(UPLOAD_BASE, "riders")
 UPLOAD_PRODUCTS = os.path.join(UPLOAD_BASE, "products")
 
+# ✅ MAIN VENDOR - Ab sab isi me aayega
+MAIN_VENDOR = "ANAMU7028"
+OLD_VENDOR = "VENDOR-1793297620"
+
 def clean_phone(p: str) -> str:
     if not p: return ""
     p = str(p).replace("+91","").replace(" ","").replace("-","").strip()
     return p[-10:] if len(p) >= 10 else p
 
 def fix_item_image(item: dict, db=None):
-    # ✅ FIX - Item me koi bhi naam se photo ho, image me daal do
     it = dict(item)
     img = it.get("image") or it.get("imageUrl") or it.get("image_url") or it.get("img") or it.get("photo") or ""
     if not img and db is not None:
-        # Product Table se photo dhoondo - Naam se
         try:
             name = str(it.get("name") or it.get("productName") or it.get("title") or "").strip()
             if name:
@@ -86,14 +88,11 @@ def fix_item_image(item: dict, db=None):
                     img = prod.image
         except: pass
     if not img:
-        # Fallback - Sabzi wali photo
         img = "https://images.unsplash.com/photo-1542838132-92c53300491e?w=500"
     it["image"] = img
     it["imageUrl"] = img
-    # Naam fix
     if not it.get("name"):
         it["name"] = it.get("productName") or it.get("title") or "Product"
-    # Qty fix
     if it.get("qty") is None:
         it["qty"] = it.get("quantity") or 1
     return it
@@ -251,7 +250,6 @@ class PlaceOrderRequest(BaseModel):
     vendor_id: Optional[str] = None
     town: Optional[str] = None
     zone: Optional[str] = None
-    # ✅ FIX - Customer App se Naam bhi aa sakta hai
     customerName: Optional[str] = None
     customer_name: Optional[str] = None
     name: Optional[str] = None
@@ -264,7 +262,7 @@ class ApproveRiderRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"message": "BazarHaat Backend v5 Final - All Fixed", "status": "OK"}
+    return {"message": "BazarHaat Backend v6 Final - ANAMU7028", "status": "OK"}
 
 @app.post("/api/rider/auth/firebase-verify")
 def firebase_verify_rider(req: FirebaseVerifyRequest):
@@ -386,7 +384,6 @@ def verify_customer_otp(req: CustomerVerifyRequest):
         return {"success": True, "customer": {"id": customer.id, "phone": customer.phone, "name": customer.name, "town": customer.town or "Hatidhura", "pincode": customer.pincode or "783332", "address": customer.address or ""}, "token": f"token_{customer.id}_{int(time.time())}"}
     finally: db.close()
 
-# ✅ FIXED - Naam + Pura Address + Photo ke saath Order
 @app.post("/api/customer/place-order")
 def customer_place_order(req: PlaceOrderRequest):
     phone = clean_phone(req.phone or req.customerPhone or "")
@@ -394,28 +391,25 @@ def customer_place_order(req: PlaceOrderRequest):
     try:
         customer = db.query(Customer).filter(Customer.phone == phone).first()
         if not customer:
-            # ✅ Agar Customer Register nahi hai, to naam se hi bana do - Order rukna nahi chahiye
             cust_name = req.customerName or req.customer_name or req.name or "Customer"
             customer = Customer(id=f"CUST-{uuid.uuid4().hex[:6].upper()}", phone=phone, name=cust_name, town=req.town or "Hatidhura", address=req.address or "", pincode=req.pincode or "783332")
             db.add(customer); db.commit(); db.refresh(customer)
             print(f"✅ AUTO CUSTOMER CREATED: {phone} - {cust_name}")
-        # ✅ Naam - App se aaya to wahi, nahi to DB wala
         real_name = req.customerName or req.customer_name or req.name or customer.name or "Customer"
         if real_name in ["", "User", "user"]:
             real_name = customer.name
-        vendor_id = "VENDOR-1793297620"
-        if req.vendor_id:
+        # ✅ FIX - Agar Vendor ID purana hai to naye me daalo, warna naye me hi
+        vendor_id = MAIN_VENDOR
+        if req.vendor_id and req.vendor_id.strip() not in ["", OLD_VENDOR]:
             vendor_id = str(req.vendor_id).strip()
         elif req.cart and len(req.cart) > 0:
             first_item = req.cart[0]
-            if first_item.get("vendor_id"):
-                vendor_id = str(first_item["vendor_id"]).strip()
-            elif first_item.get("vendorId"):
-                vendor_id = str(first_item["vendorId"]).strip()
+            vid = first_item.get("vendor_id") or first_item.get("vendorId") or ""
+            if vid and str(vid).strip() != OLD_VENDOR:
+                vendor_id = str(vid).strip()
         order_id = f"BH-{random.randint(100,999)}-{uuid.uuid4().hex[:3].upper()}"
         delivery_otp = str(random.randint(1000,9999))
         total = req.total or sum([float(i.get('price',0))*int(i.get('qty',1) if 'qty' in i else i.get('quantity',1)) for i in req.cart])
-        # ✅ FIX - Pura Address: Address + Town + Pincode
         full_address = req.address or customer.address or ""
         town = req.town or customer.town or "Hatidhura"
         pincode = req.pincode or customer.pincode or "783332"
@@ -425,7 +419,6 @@ def customer_place_order(req: PlaceOrderRequest):
             full_address = f"{full_address} - {pincode}"
         if not full_address:
             full_address = f"{town} - {pincode}"
-        # ✅ FIX - Har Item ki Photo fix karo
         fixed_cart = [fix_item_image(it, db) for it in (req.cart or [])]
         new_order = Order(
             id=order_id, otp=delivery_otp, delivery_otp=delivery_otp, pickup_otp="", store_qr=f"STORE-{order_id}",
@@ -456,8 +449,10 @@ def place_order_generic(req: OrderItemRequest):
         total = req.total or 0
         if total == 0 and req.items:
             total = sum([float(i.get('price',0)) * int(i.get('qty',1) if 'qty' in i else i.get('quantity',1)) for i in req.items])
-        vendor_id = req.vendor_id or "VENDOR-1793297620"
-        # ✅ FIX - Customer naam DB se lo, nahi to req wala
+        # ✅ FIX - Purana ID aaye to naye me daalo
+        vendor_id = req.vendor_id or MAIN_VENDOR
+        if vendor_id == OLD_VENDOR:
+            vendor_id = MAIN_VENDOR
         cust = db.query(Customer).filter(Customer.phone == phone).first()
         real_name = req.customerName
         if (not real_name or real_name in ["User", "Customer"]) and cust:
@@ -614,7 +609,15 @@ def get_products(category: Optional[str]=None):
     finally: db.close()
 
 @app.get("/api/vendor/products/{vendor_id}")
-def get_vendor_products(vendor_id: str): db=SessionLocal(); p=db.query(Product).filter(Product.vendor_id==vendor_id).all(); db.close(); return p
+def get_vendor_products(vendor_id: str):
+    db=SessionLocal()
+    try:
+        p=db.query(Product).filter(Product.vendor_id==vendor_id).all()
+        # ✅ Agar naye ID me 0 hai to purane wale ka bhi dikhao - Transfer se pehle ke liye
+        if not p and vendor_id != OLD_VENDOR:
+            p=db.query(Product).filter(Product.vendor_id==OLD_VENDOR).all()
+        return p
+    finally: db.close()
 
 @app.get("/api/vendor/orders/{vendor_id}")
 def get_vendor_orders(vendor_id: str):
@@ -622,9 +625,8 @@ def get_vendor_orders(vendor_id: str):
     db = SessionLocal()
     try:
         orders = db.query(Order).filter(Order.vendor_id == vendor_id).order_by(Order.created_at.desc()).all()
-        # ✅ FIX - Agar is Vendor ID me 0 hai to purane wale ka bhi dikhao
-        if not orders and vendor_id != "VENDOR-1793297620":
-            orders = db.query(Order).filter(Order.vendor_id == "VENDOR-1793297620").order_by(Order.created_at.desc()).all()
+        if not orders and vendor_id != OLD_VENDOR:
+            orders = db.query(Order).filter(Order.vendor_id == OLD_VENDOR).order_by(Order.created_at.desc()).all()
         result = []
         for o in orders:
             try:
@@ -633,7 +635,6 @@ def get_vendor_orders(vendor_id: str):
                 if not isinstance(items_list, list): items_list = []
             except:
                 items_list = []
-            # ✅ FIX - Purane Orders ki bhi Photo fix karo
             items_list = [fix_item_image(it, db) for it in items_list]
             result.append({
                 "id": o.id, "orderId": o.id, "customer": o.customer, "customerName": o.customer,
@@ -658,9 +659,9 @@ def vendor_stats(vendor_id: str):
     try:
         pc = db.query(Product).filter(Product.vendor_id == vendor_id).count()
         orders = db.query(Order).filter(Order.vendor_id == vendor_id).all()
-        if not orders and vendor_id != "VENDOR-1793297620":
-            orders = db.query(Order).filter(Order.vendor_id == "VENDOR-1793297620").all()
-            pc = db.query(Product).filter(Product.vendor_id == "VENDOR-1793297620").count()
+        if not orders and vendor_id != OLD_VENDOR:
+            orders = db.query(Order).filter(Order.vendor_id == OLD_VENDOR).all()
+            pc = db.query(Product).filter(Product.vendor_id == OLD_VENDOR).count()
         today = datetime.now().date()
         today_orders = [o for o in orders if o.created_at and o.created_at.date() == today]
         return {"product_count": pc, "total_orders": len(orders), "new_orders": len([o for o in orders if o.status == "New"]), "pending_orders": len([o for o in orders if o.status == "New"]), "today_income": sum([o.amount for o in today_orders]), "today_orders": len(today_orders), "total_income": sum([o.amount for o in orders]), "earnings": sum([o.amount for o in orders if o.status == "Delivered"]), "vendor_id": vendor_id, "rating": 4.8}
@@ -728,7 +729,6 @@ def vendor_masked_call(order_id: str):
     finally:
         db.close()
 
-# ✅ FIXED - Rider ko Items + Photo + Address sab milega
 @app.get("/api/rider/orders")
 def get_rider_available_orders():
     db = SessionLocal()
@@ -879,10 +879,12 @@ async def register_rider(rider_id: str = Form(...), name: str = Form(...), phone
 
 @app.post("/api/vendor/products")
 @app.post("/vendor/add-product")
-async def vendor_add_product(vendor_id: str = Form("VENDOR-1793297620"), name: str = Form(None), Product_Name: str = Form(None), price: float = Form(None), sell_price: float = Form(None), original_price: float = Form(0), discount: float = Form(0), discount_percent: float = Form(0), stock: int = Form(100), category: str = Form("General"), offer_text: str = Form(""), description: str = Form(""), image: UploadFile = File(None), image_file: UploadFile = File(None), file: UploadFile = File(None)):
+async def vendor_add_product(vendor_id: str = Form("ANAMU7028"), name: str = Form(None), Product_Name: str = Form(None), price: float = Form(None), sell_price: float = Form(None), original_price: float = Form(0), discount: float = Form(0), discount_percent: float = Form(0), stock: int = Form(100), category: str = Form("General"), offer_text: str = Form(""), description: str = Form(""), image: UploadFile = File(None), image_file: UploadFile = File(None), file: UploadFile = File(None)):
     db = SessionLocal()
     try:
-        vendor_id = str(vendor_id or "VENDOR-1793297620").strip()
+        vendor_id = str(vendor_id or MAIN_VENDOR).strip()
+        if vendor_id == OLD_VENDOR:
+            vendor_id = MAIN_VENDOR
         final_name = str(name or Product_Name or "Product").strip()
         final_category = str(category or "General").strip()
         final_offer = str(offer_text or "").strip()
@@ -981,7 +983,6 @@ def fix_old_order(order_id: str, new_otp: str):
     finally:
         db.close()
 
-# ✅ FIX - Purane Orders ki Photo bhi fix karne ke liye
 @app.get("/api/admin/fix-all-orders")
 def fix_all_orders():
     db = SessionLocal()
@@ -1001,6 +1002,38 @@ def fix_all_orders():
         return {"success": True, "fixed": fixed, "message": f"{fixed} orders ki photo fix ho gayi"}
     finally:
         db.close()
+
+# ✅ TRANSFER - Purana Vendor ID ka saara data Naye ID me
+@app.get("/api/admin/migrate-vendor/{old_id}/{new_id}")
+def migrate_vendor(old_id: str, new_id: str):
+    db = SessionLocal()
+    try:
+        orders = db.query(Order).filter(Order.vendor_id == old_id).all()
+        for o in orders:
+            o.vendor_id = new_id
+        prods = db.query(Product).filter(Product.vendor_id == old_id).all()
+        for p in prods:
+            p.vendor_id = new_id
+        # ✅ Vendor ka record bhi copy karo agar naya wala nahi hai
+        old_v = db.query(Vendor).filter(Vendor.id == old_id).first()
+        new_v = db.query(Vendor).filter(Vendor.id == new_id).first()
+        if old_v and not new_v:
+            new_vendor = Vendor(id=new_id, name=old_v.name, owner=old_v.owner, phone=old_v.phone, address=old_v.address, city=old_v.city, categories=old_v.categories, status="approved", isOnline=True, isActive=True, orders=old_v.orders or 0, password=old_v.password, store_id=old_v.store_id)
+            db.add(new_vendor)
+        elif new_v:
+            new_v.status = "approved"; new_v.isOnline = True; new_v.isActive = True
+        db.commit()
+        return {"success": True, "message": f"Ho gaya! {len(orders)} Orders + {len(prods)} Products transfer ho gaye", "orders": len(orders), "products": len(prods), "old_id": old_id, "new_id": new_id}
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        db.close()
+
+# ✅ Ek hi click me purana -> ANAMU7028 transfer
+@app.get("/api/admin/migrate-to-anamu")
+def migrate_to_anamu():
+    return migrate_vendor(OLD_VENDOR, MAIN_VENDOR)
 
 app.mount("/uploads", StaticFiles(directory=UPLOAD_BASE), name="uploads")
 if __name__=="__main__":
